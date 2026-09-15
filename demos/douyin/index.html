@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#000000">
+<title>抖音 - 记录美好生活</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{background:#0d0d10;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;color:#fff;overflow:hidden}
+#app{position:relative;width:100%;max-width:480px;margin:0 auto;height:100dvh;background:#000;overflow:hidden;isolation:isolate}
+@media(min-width:560px){
+	body{display:flex;align-items:center;justify-content:center;background:radial-gradient(1100px 750px at 50% -10%,#26102c,#0d0d10 60%)}
+	#app{height:min(92dvh,880px);border-radius:22px;box-shadow:0 0 0 1px #26262c,0 30px 80px rgba(0,0,0,.8),0 0 90px rgba(254,44,85,.09)}
+}
+
+#splash{position:absolute;inset:0;z-index:999;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;animation:splashOut .6s ease 1.4s forwards}
+@keyframes splashOut{to{opacity:0;visibility:hidden}}
+.splash-logo{position:relative;font-size:64px;font-weight:900;letter-spacing:6px;font-style:italic}
+.splash-logo::before{content:"抖音";position:absolute;left:-3px;top:-2px;color:#25f4ee;mix-blend-mode:screen;animation:glitchA 1.1s steps(2) infinite}
+.splash-logo::after{content:"抖音";position:absolute;left:3px;top:2px;color:#fe2c55;mix-blend-mode:screen;animation:glitchB 1.1s steps(2) infinite}
+@keyframes glitchA{0%,100%{transform:translate(0,0)}50%{transform:translate(-3px,1px)}}
+@keyframes glitchB{0%,100%{transform:translate(0,0)}50%{transform:translate(3px,-1px)}}
+.splash-sub{font-size:13px;letter-spacing:8px;color:#9a9aa2}
+
+.top-bar{position:absolute;top:0;left:0;right:0;z-index:30;display:flex;align-items:center;justify-content:center;padding:14px 14px 20px;background:linear-gradient(to bottom,rgba(0,0,0,.55),transparent);pointer-events:none}
+.tabs{display:flex;gap:26px;pointer-events:auto}
+.tabs span{font-size:16px;color:rgba(255,255,255,.62);cursor:pointer;position:relative;padding:2px 2px 8px;transition:color .2s}
+.tabs span.active{color:#fff;font-weight:700}
+.tabs span.active::after{content:"";position:absolute;left:50%;transform:translateX(-50%);bottom:2px;width:22px;height:3px;border-radius:2px;background:#fff}
+#searchBtn{position:absolute;right:14px;top:12px;width:32px;height:32px;display:flex;align-items:center;justify-content:center;cursor:pointer;pointer-events:auto}
+#searchBtn svg{width:21px;height:21px;fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round}
+#liveBadge{position:absolute;left:14px;top:12px;display:none;align-items:center;gap:4px;background:rgba(254,44,85,.9);border-radius:6px;padding:3px 7px;font-size:11px;font-weight:700;pointer-events:auto;cursor:pointer}
+
+#feed{height:100%;overflow-y:scroll;scroll-snap-type:y mandatory;scrollbar-width:none;-ms-overflow-style:none}
+#feed::-webkit-scrollbar{display:none}
+.card{position:relative;height:100%;scroll-snap-align:start;scroll-snap-stop:always;background:#000;overflow:hidden}
+.media{position:absolute;inset:0}
+.media video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
+.media canvas.fake{position:absolute;inset:0;width:100%;height:100%;display:none}
+.card.fakemode .media video{display:none}
+.card.fakemode .media canvas.fake{display:block}
+.grad-t{position:absolute;top:0;left:0;right:0;height:90px;background:linear-gradient(to bottom,rgba(0,0,0,.45),transparent);pointer-events:none;z-index:2}
+.grad-b{position:absolute;bottom:0;left:0;right:0;height:190px;background:linear-gradient(to top,rgba(0,0,0,.6),transparent);pointer-events:none;z-index:2}
+
+.progress{position:absolute;left:0;right:0;bottom:52px;height:2px;background:rgba(255,255,255,.18);z-index:6}
+.progress-fill{height:100%;width:0;background:#fe2c55;border-radius:0 1px 1px 0}
+
+.play-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:5;opacity:0;transition:opacity .18s;pointer-events:none}
+.card.paused .play-overlay{opacity:1}
+.play-overlay .pp{width:76px;height:76px;border-radius:50%;background:rgba(0,0,0,.45);backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;transform:scale(.85);transition:transform .18s}
+.card.paused .play-overlay .pp{transform:scale(1)}
+.play-overlay svg{width:34px;height:34px;fill:#fff;margin-left:4px}
+.card.paused .play-overlay svg{margin-left:0}
+
+.pill{position:absolute;left:50%;transform:translateX(-50%);z-index:7;background:rgba(0,0,0,.55);backdrop-filter:blur(6px);border-radius:100px;padding:7px 16px;font-size:12px;color:#fff;cursor:pointer;white-space:nowrap;border:1px solid rgba(255,255,255,.14)}
+.mute-pill{bottom:86px}
+.hint-pill{bottom:130px;pointer-events:none;animation:hintFade .5s ease 5s forwards}
+@keyframes hintFade{to{opacity:0;visibility:hidden}}
+
+.rail{position:absolute;right:8px;bottom:110px;z-index:10;display:flex;flex-direction:column;align-items:center;gap:20px}
+.rail-item{display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;user-select:none}
+.rail-item svg{width:36px;height:36px;fill:#fff;filter:drop-shadow(0 1px 3px rgba(0,0,0,.5));transition:transform .15s}
+.rail-item:active svg{transform:scale(1.18)}
+.btn-count{font-size:12px;font-weight:600;text-shadow:0 1px 2px rgba(0,0,0,.6)}
+.avatar-wrap{position:relative;margin-bottom:6px}
+.avatar{width:50px;height:50px;border-radius:50%;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:26px;background:linear-gradient(135deg,#4b4b52,#222);box-shadow:0 2px 8px rgba(0,0,0,.5)}
+.follow-btn{position:absolute;left:50%;bottom:-9px;transform:translateX(-50%);width:19px;height:19px;border-radius:50%;background:#fe2c55;color:#fff;font-size:14px;line-height:17px;text-align:center;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.5);transition:all .2s}
+.follow-btn.done{background:#fff;color:#fe2c55;font-size:11px;line-height:18px}
+.like-btn.liked svg{fill:#fe2c55;stroke:none}
+.like-btn.bump svg{animation:bump .4s ease}
+@keyframes bump{0%{transform:scale(1)}30%{transform:scale(1.45)}60%{transform:scale(.85)}100%{transform:scale(1)}}
+
+.disc{position:relative;width:46px;height:46px;border-radius:50%;background:conic-gradient(from 0deg,#3a3a3a,#111,#3a3a3a,#111,#3a3a3a);display:flex;align-items:center;justify-content:center;animation:spin 6s linear infinite;animation-play-state:paused;box-shadow:0 2px 8px rgba(0,0,0,.5)}
+.card.playing .disc{animation-play-state:running}
+@keyframes spin{to{transform:rotate(360deg)}}
+.disc-inner{width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,#2c2c31,#151519);display:flex;align-items:center;justify-content:center;font-size:15px}
+
+.info{position:absolute;left:14px;right:80px;bottom:72px;z-index:9;text-shadow:0 1px 3px rgba(0,0,0,.7)}
+.author-name{font-size:17px;font-weight:700;margin-bottom:7px;cursor:pointer}
+.desc{font-size:14.5px;line-height:1.45;color:#f3f3f5;white-space:pre-wrap}
+.desc .tag{color:#cfe9ff;font-weight:600}
+.music-line{display:flex;align-items:center;gap:6px;margin-top:9px;font-size:13px;color:#f3f3f5;max-width:100%}
+.music-line svg{width:14px;height:14px;fill:#fff;flex:none}
+.music-scroll{overflow:hidden;flex:1;mask-image:linear-gradient(90deg,transparent,#000 8%,#000 92%,transparent);-webkit-mask-image:linear-gradient(90deg,transparent,#000 8%,#000 92%,transparent)}
+.music-text{display:inline-block;white-space:nowrap;animation:marquee 9s linear infinite}
+@keyframes marquee{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+
+.float-heart{position:absolute;z-index:20;font-size:26px;color:#fe2c55;pointer-events:none;animation:floatUp 1.1s ease-out forwards;filter:drop-shadow(0 2px 4px rgba(0,0,0,.4))}
+@keyframes floatUp{0%{transform:translate(0,0) scale(.5) rotate(0);opacity:0}12%{opacity:1}100%{transform:translate(var(--dx,0),-38vh) scale(1.25) rotate(var(--rot,20deg));opacity:0}}
+.big-heart{position:absolute;z-index:21;font-size:96px;color:#fe2c55;pointer-events:none;transform:translate(-50%,-50%);animation:bigPop .9s ease-out forwards;filter:drop-shadow(0 4px 14px rgba(254,44,85,.6))}
+@keyframes bigPop{0%{transform:translate(-50%,-50%) scale(.4);opacity:0}25%{transform:translate(-50%,-50%) scale(1.25);opacity:1}55%{transform:translate(-50%,-50%) scale(1)}75%{opacity:1}100%{transform:translate(-50%,-50%) scale(1.05);opacity:0}}
+
+#nav{position:absolute;left:0;right:0;bottom:0;z-index:40;height:54px;background:#000;display:flex;align-items:center;border-top:1px solid rgba(255,255,255,.06)}
+.nav-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer;color:#8a8a92;font-size:10.5px}
+.nav-item svg{width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linejoin:round;stroke-linecap:round}
+.nav-item.active{color:#fff;font-weight:600}
+.nav-plus{flex:1;display:flex;justify-content:center;cursor:pointer}
+.nav-plus div{width:44px;height:30px;border-radius:9px;background:linear-gradient(90deg,#2b2b31,#fe2c55 30%,#ff5c7a 70%,#2b2b31);display:flex;align-items:center;justify-content:center;box-shadow:0 2px 10px rgba(254,44,85,.4)}
+.nav-plus span{color:#fff;font-size:20px;font-weight:300;line-height:1}
+
+.sheet-backdrop{position:absolute;inset:0;z-index:50;background:rgba(0,0,0,.5);opacity:0;visibility:hidden;transition:.25s}
+.sheet-backdrop.show{opacity:1;visibility:visible}
+.sheet{position:absolute;left:0;right:0;bottom:0;z-index:60;background:#1c1c21;border-radius:14px 14px 0 0;transform:translateY(105%);transition:transform .3s cubic-bezier(.32,.72,.24,1);display:flex;flex-direction:column;max-height:68%}
+.sheet.open{transform:translateY(0)}
+.sheet-handle{width:36px;height:4px;border-radius:2px;background:#4a4a52;margin:8px auto 0;flex:none}
+.comment-sheet{height:66%}
+.sheet-header{flex:none;padding:10px 16px 12px;font-size:14px;font-weight:600;color:#e9e9ee;display:flex;justify-content:center;border-bottom:1px solid rgba(255,255,255,.06)}
+.comment-list{flex:1;overflow-y:auto;padding:6px 16px 12px;scrollbar-width:none}
+.comment-list::-webkit-scrollbar{display:none}
+.comment-item{display:flex;gap:11px;padding:11px 0}
+.c-avatar{flex:none;width:37px;height:37px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12.5px;font-weight:700;color:#fff}
+.c-main{flex:1;min-width:0}
+.c-name{font-size:12.5px;color:#9a9aa4;display:flex;align-items:center;gap:6px}
+.c-badge{font-size:9.5px;color:#fe2c55;border:1px solid #fe2c55;border-radius:3px;padding:0 3px;font-weight:400}
+.c-text{font-size:14px;line-height:1.45;color:#f0f0f3;margin-top:3px;word-break:break-word}
+.c-meta{display:flex;align-items:center;gap:12px;margin-top:6px;font-size:11.5px;color:#7c7c86}
+.c-like{margin-left:auto;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;flex:none;padding-top:6px}
+.c-like svg{width:17px;height:17px;fill:#7c7c86}
+.c-like.liked svg{fill:#fe2c55}
+.c-like span{font-size:10.5px;color:#7c7c86}
+.comment-input{flex:none;display:flex;align-items:center;gap:9px;padding:10px 14px calc(10px + env(safe-area-inset-bottom));border-top:1px solid rgba(255,255,255,.07)}
+.comment-input input{flex:1;background:#2a2a31;border:none;border-radius:100px;padding:10px 16px;color:#fff;font-size:14px;outline:none}
+.comment-input input::placeholder{color:#77777f}
+.comment-input button{flex:none;width:38px;height:38px;border-radius:50%;border:none;background:#fe2c55;color:#fff;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.comment-input button svg{width:17px;height:17px;fill:#fff;margin-left:2px}
+
+.share-sheet{padding-bottom:16px}
+.share-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px 8px;padding:18px 18px 10px}
+.share-item{display:flex;flex-direction:column;align-items:center;gap:7px;cursor:pointer}
+.share-icon{width:52px;height:52px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:24px}
+.share-item span{font-size:11.5px;color:#c9c9d0}
+.share-cancel{margin:10px 18px 0;height:44px;border-radius:10px;background:#2a2a31;display:flex;align-items:center;justify-content:center;font-size:15px;color:#fff;cursor:pointer}
+
+#toast{position:absolute;left:50%;bottom:76px;transform:translateX(-50%) translateY(8px);z-index:100;background:rgba(30,30,36,.94);border:1px solid rgba(255,255,255,.1);border-radius:100px;padding:10px 20px;font-size:13px;color:#fff;opacity:0;visibility:hidden;transition:.25s;white-space:nowrap;pointer-events:none;box-shadow:0 6px 24px rgba(0,0,0,.5)}
+#toast.show{opacity:1;visibility:visible;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+<div id="app">
+	<div id="splash">
+		<div class="splash-logo">抖音</div>
+		<div class="splash-sub">记录美好生活</div>
+	</div>
+
+	<div class="top-bar">
+		<div class="tabs" id="tabs">
+			<span data-tab="关注">关注</span>
+			<span data-tab="推荐" class="active">推荐</span>
+			<span data-tab="附近">附近</span>
+		</div>
+		<div id="searchBtn" title="搜索">
+			<svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/></svg>
+		</div>
+	</div>
+
+	<main id="feed"></main>
+
+	<nav id="nav">
+		<div class="nav-item active" data-nav="首页">
+			<svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>
+			<span>首页</span>
+		</div>
+		<div class="nav-item" data-nav="朋友">
+			<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20.5c.7-4 3.8-6 7.5-6s6.8 2 7.5 6"/></svg>
+			<span>朋友</span>
+		</div>
+		<div class="nav-plus" id="navPlus"><div><span>＋</span></div></div>
+		<div class="nav-item" data-nav="消息">
+			<svg viewBox="0 0 24 24"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v9a1.5 1.5 0 0 1-1.5 1.5H9l-5 4z"/></svg>
+			<span>消息</span>
+		</div>
+		<div class="nav-item" data-nav="我">
+			<svg viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="4"/><path d="M4 20.5c1-4.3 4.3-6.2 8-6.2s7 1.9 8 6.2"/></svg>
+			<span>我</span>
+		</div>
+	</nav>
+
+	<div class="sheet-backdrop" id="backdrop"></div>
+
+	<div class="sheet comment-sheet" id="commentSheet">
+		<div class="sheet-handle"></div>
+		<div class="sheet-header" id="commentHeader">0条评论</div>
+		<div class="comment-list" id="commentList"></div>
+		<div class="comment-input">
+			<input id="commentInput" type="text" maxlength="120" placeholder="留下你的精彩评论吧">
+			<button id="commentSend" title="发送">
+				<svg viewBox="0 0 24 24"><path d="M3 11.5 21 3l-8.5 18-2.4-7.1z"/></svg>
+			</button>
+		</div>
+	</div>
+
+	<div class="sheet share-sheet" id="shareSheet">
+		<div class="sheet-handle"></div>
+		<div class="share-grid" id="shareGrid"></div>
+		<div class="share-cancel" id="shareCancel">取消</div>
+	</div>
+
+	<div id="toast"></div>
+</div>
+
+<script>
+const VIDEO_POOL = [
+	["https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"],
+	["https://www.w3schools.com/html/mov_bbb.mp4","https://media.w3.org/2010/05/bunny/movie.mp4"],
+	["https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4"],
+	["https://test-videos.co.uk/vids/jellyfish/mp4/h264/360/Jellyfish_360_10s_1MB.mp4"],
+	["https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4"],
+	["https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4"],
+	["https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4"],
+	["https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerMeltdowns.mp4"],
+];
+
+const C_AUTHORS = ["柠檬不酸","爱吃香菜星人","风一样的男子","momo","打工人小张","一只柯基","北纬三十度","奶茶三分糖","今天也要加油鸭","数码测评君","不吃香菜谢谢","深夜修仙中","芒果很忙","键盘侠克星","南方小土豆","热爱可抵岁月漫长"];
+const C_TEXTS = ["这也太好看了吧，求个位置！","拍得太有感觉了，直接收藏","前排围观，来晚了","博主用的什么设备呀","每天来看一遍，完全看不腻","收藏从未停止，行动从未开始","这就是生活该有的样子","bgm太好听了叫什么呀","已三连，火速赶来","评论区都是人才哈哈哈哈","第一次离博主这么近","啊这构图，绝了","蹲一个详细教程","看饿了，深夜放毒是吧","这就是青春啊","每一帧都是壁纸级别","忍不住循环了十遍","太治愈了，看着看着就笑了","羡慕能去现场的人","好家伙，直接好家伙"];
+const C_REPLIES = ["谢谢大家的喜欢，会持续更新的～❤️","统一回复：位置和教程都在置顶评论啦","感谢支持，下期安排！","爱你们，比心❤️"];
+const C_TIMES = ["刚刚","3分钟前","28分钟前","1小时前","3小时前","昨天","2天前","4天前","1周前"];
+const C_IPS = ["北京","上海","广东","浙江","四川","湖北","陕西","山东","江苏","重庆"];
+const AVATAR_COLORS = ["#fe2c55","#25f4ee","#7c4dff","#00b96b","#ff9100","#f50057","#2979ff","#c2185b"];
+
+function seedComments(seed){
+	const n = 8 + seed % 5;
+	const out = [];
+	for(let k = 0; k < n; k++){
+		out.push({
+			name: C_AUTHORS[(seed * 5 + k * 3) % C_AUTHORS.length],
+			text: C_TEXTS[(seed * 7 + k * 11) % C_TEXTS.length],
+			time: C_TIMES[(seed + k * 2) % C_TIMES.length],
+			ip: C_IPS[(seed * 3 + k) % C_IPS.length],
+			likes: (seed * 137 + k * 89) % 2400 + 23,
+			liked: false,
+		});
+	}
+	out.splice(1, 0, { name: "author", isAuthor: true, text: C_REPLIES[seed % C_REPLIES.length], time: "刚刚", ip: "", likes: 999, liked: false });
+	return out;
+}
+
+const ITEMS = [
+	{ author:"旅行摄影师阿伦", emoji:"🏔️", desc:"在稻城亚丁蹲守了三天，终于等到日照金山的那一刻 #旅行 #风光摄影 #稻城亚丁 #治愈系风景", music:"@旅行摄影师阿伦创作的原创声音", likes:124000, shares:8600, colors:["#1a2a6c","#b21f1f","#fdbb2d"] },
+	{ author:"深夜厨房", emoji:"🍳", desc:"30秒学会完美溏心蛋，搅拌这一步千万别省 #美食教程 #溏心蛋 #厨房小白必看", music:"Mai桃几 - 《厨房交响曲》", likes:89000, shares:5400, colors:["#232526","#8e2de2","#fe2c55"] },
+	{ author:"萌宠日记", emoji:"🐱", desc:"橘猫第一次见雪，反应绝了哈哈哈哈 #萌宠 #橘猫 #猫咪日常", music:"喵了个喵 - 《猫咪disco》", likes:456000, shares:32000, colors:["#134e5e","#71b280","#0b8793"] },
+	{ author:"街球少年阿凯", emoji:"🏀", desc:"野球场最后一攻，绝杀必须拉杆 #篮球 #野球场 #绝杀时刻", music:"Epic Rock - 《热血街球》", likes:230000, shares:15000, colors:["#141e30","#fe2c55","#f953c6"] },
+	{ author:"手作时光", emoji:"🎨", desc:"旧牛仔裤改造托特包，全程治愈解压 #手工diy #旧物改造 #解压视频", music:"lofi手作电台 - 《慢时光》", likes:67000, shares:4100, colors:["#0f3443","#34e89e","#0f9b8e"] },
+	{ author:"极限运动现场", emoji:"🪂", desc:"翼装飞行穿越云海的瞬间，人生清单又划掉一项 #极限运动 #翼装飞行 #勇敢者的游戏", music:"Sky Fighters - 《Adrenaline》", likes:890000, shares:56000, colors:["#232526","#414345","#fe2c55"] },
+	{ author:"城市观察员", emoji:"🌃", desc:"凌晨四点的菜市场，藏着最真实的人间烟火 #人间烟火 #城市摄影 #菜市场", music:"城市夜话 - 《凌晨四点》", likes:152000, shares:9800, colors:["#141E30","#243B55","#F56217"] },
+	{ author:"健身打卡君", emoji:"💪", desc:"新手健身三大坑，第二个90%的人都中招 #健身干货 #新手健身 #避坑指南", music:"Beast Mode - 《训练节拍》", likes:45000, shares:2800, colors:["#2b5876","#4e4376","#fe2c55"] },
+];
+ITEMS.forEach((it, i) => { it.urls = VIDEO_POOL[i]; it.comments = seedComments(i); it.liked = false; it.followed = false; });
+
+const SHARE_TARGETS = [
+	{ icon:"💬", name:"微信", color:"#07c160", msg:"已唤起微信分享（演示）" },
+	{ icon:"📸", name:"朋友圈", color:"#8bc34a", msg:"已唤起朋友圈分享（演示）" },
+	{ icon:"🧣", name:"微博", color:"#e6162d", msg:"已唤起微博分享（演示）" },
+	{ icon:"🐧", name:"QQ", color:"#12b7f5", msg:"已唤起QQ分享（演示）" },
+	{ icon:"🎵", name:"抖音好友", color:"#fe2c55", msg:"已发送给抖音好友（演示）" },
+	{ icon:"🔗", name:"复制链接", color:"#5c5c66", msg:"链接已复制，快去分享吧" },
+	{ icon:"💾", name:"保存本地", color:"#3f3f47", msg:"视频已保存到相册（演示）" },
+	{ icon:"⚠️", name:"举报", color:"#6d6d78", msg:"已收到举报，感谢反馈" },
+];
+
+const $ = (sel) => document.querySelector(sel);
+const feed = $("#feed");
+const SVG = {
+	heart: '<svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>',
+	heartO: '<svg viewBox="0 0 24 24" style="fill:none;stroke:#fff;stroke-width:1.6"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>',
+	comment: '<svg viewBox="0 0 24 24"><path d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/></svg>',
+	share: '<svg viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z"/></svg>',
+	music: '<svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>',
+	play: '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>',
+	pause: '<svg viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>',
+};
+
+function formatCount(n){
+	return n >= 10000 ? (n / 10000).toFixed(1).replace(/\.0$/, "") + "w" : String(n);
+}
+function highlight(text){
+	return text.replace(/[&<>]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])).replace(/(#[^\s#]+|@[^\s@]+)/g, '<span class="tag">$1</span>');
+}
+
+let toastTimer = null;
+function toast(msg){
+	const t = $("#toast");
+	t.textContent = msg;
+	t.classList.add("show");
+	clearTimeout(toastTimer);
+	toastTimer = setTimeout(() => t.classList.remove("show"), 1900);
+}
+
+class FakePlayer{
+	constructor(canvas, item){
+		this.canvas = canvas;
+		this.ctx = canvas.getContext("2d");
+		this.item = item;
+		this.playing = false;
+		this.duration = 12;
+		this.t = Math.random() * 4;
+		this.last = 0;
+		this.raf = 0;
+		this.onProgress = null;
+		this.particles = Array.from({ length: 26 }, () => ({
+			x: Math.random(), y: Math.random(), r: Math.random() * 2.4 + 0.8,
+			v: Math.random() * 0.02 + 0.006, ph: Math.random() * Math.PI * 2,
+		}));
+	}
+	resize(){
+		const dpr = Math.min(window.devicePixelRatio || 1, 2);
+		const w = this.canvas.clientWidth, h = this.canvas.clientHeight;
+		this.canvas.width = w * dpr;
+		this.canvas.height = h * dpr;
+		this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+		this.w = w; this.h = h;
+	}
+	start(){
+		if(this.playing) return;
+		this.playing = true;
+		this.last = performance.now();
+		this.raf = requestAnimationFrame(this.tick.bind(this));
+	}
+	pause(){
+		this.playing = false;
+		cancelAnimationFrame(this.raf);
+	}
+	tick(now){
+		if(!this.playing) return;
+		const dt = Math.min((now - this.last) / 1000, 0.1);
+		this.last = now;
+		this.t = (this.t + dt) % this.duration;
+		this.draw();
+		if(this.onProgress) this.onProgress(this.t / this.duration);
+		this.raf = requestAnimationFrame(this.tick.bind(this));
+	}
+	draw(){
+		const { ctx, w, h, t } = this;
+		const [c1, c2, c3] = this.item.colors;
+		const a = t * 0.25;
+		const g = ctx.createLinearGradient(w/2 + Math.sin(a)*w, h/2 + Math.cos(a)*h, w/2 - Math.sin(a)*w, h/2 - Math.cos(a)*h);
+		g.addColorStop(0, c1); g.addColorStop(0.55, c2); g.addColorStop(1, c3);
+		ctx.fillStyle = g;
+		ctx.fillRect(0, 0, w, h);
+		ctx.fillStyle = "rgba(255,255,255,.28)";
+		for(const p of this.particles){
+			const px = p.x * w + Math.sin(t + p.ph) * 12;
+			const py = ((p.y - t * p.v) % 1 + 1) % 1 * h;
+			ctx.beginPath();
+			ctx.arc(px, py, p.r, 0, Math.PI * 2);
+			ctx.fill();
+		}
+		const size = Math.min(w, h) * 0.3;
+		ctx.save();
+		ctx.translate(w / 2, h / 2 + Math.sin(t * 1.6) * 14);
+		ctx.rotate(Math.sin(t * 0.8) * 0.06);
+		ctx.font = size + "px serif";
+		ctx.textAlign = "center";
+		ctx.textBaseline = "middle";
+		ctx.shadowColor = "rgba(0,0,0,.4)";
+		ctx.shadowBlur = 24;
+		ctx.fillText(this.item.emoji, 0, 0);
+		ctx.restore();
+		const v = ctx.createRadialGradient(w/2, h/2, Math.min(w,h)*0.3, w/2, h/2, Math.max(w,h)*0.75);
+		v.addColorStop(0, "rgba(0,0,0,0)");
+		v.addColorStop(1, "rgba(0,0,0,.5)");
+		ctx.fillStyle = v;
+		ctx.fillRect(0, 0, w, h);
+	}
+}
+
+let muted = true;
+let activeIdx = 0;
+const cards = [];
+
+function buildCard(item, idx){
+	const card = document.createElement("section");
+	card.className = "card";
+	card.innerHTML = `
+		<div class="media">
+			<video muted loop playsinline webkit-playsinline preload="${idx < 3 ? "auto" : "metadata"}"></video>
+			<canvas class="fake"></canvas>
+			<div class="grad-t"></div><div class="grad-b"></div>
+			<div class="play-overlay"><div class="pp">${SVG.play}</div></div>
+			${muted ? '<div class="pill mute-pill no-nav">🔇 点击开启声音</div>' : ""}
+			${idx === 0 ? '<div class="pill hint-pill no-nav">滚动 / 方向键切换 · 双击点赞</div>' : ""}
+		</div>
+		<div class="progress"><div class="progress-fill"></div></div>
+		<div class="rail no-nav">
+			<div class="rail-item avatar-wrap-item">
+				<div class="avatar-wrap">
+					<div class="avatar">${item.emoji}</div>
+					<div class="follow-btn">＋</div>
+				</div>
+			</div>
+			<div class="rail-item like-btn">
+				${SVG.heartO}
+				<span class="btn-count like-count">${formatCount(item.likes)}</span>
+			</div>
+			<div class="rail-item comment-btn">
+				${SVG.comment}
+				<span class="btn-count comment-count">${item.comments.length}</span>
+			</div>
+			<div class="rail-item share-btn">
+				${SVG.share}
+				<span class="btn-count">${formatCount(item.shares)}</span>
+			</div>
+			<div class="rail-item disc-item">
+				<div class="disc"><div class="disc-inner">${item.emoji}</div></div>
+			</div>
+		</div>
+		<div class="info no-nav">
+			<div class="author-name">@${item.author}</div>
+			<div class="desc">${highlight(item.desc)}</div>
+			<div class="music-line">${SVG.music}<span class="music-scroll"><span class="music-text">${item.music}　　${item.music}　　</span></span></div>
+		</div>`;
+	feed.appendChild(card);
+
+	card._item = item;
+	card._video = card.querySelector("video");
+	card._fill = card.querySelector(".progress-fill");
+	card._likeBtn = card.querySelector(".like-btn");
+	card._likeCount = card.querySelector(".like-count");
+	card._commentCount = card.querySelector(".comment-count");
+	card._followBtn = card.querySelector(".follow-btn");
+
+	const v = card._video;
+	let srcIdx = 0;
+	let settled = false;
+	const tryNext = () => {
+		if(settled) return;
+		if(srcIdx >= item.urls.length){ enableFake(card); return; }
+		v.src = item.urls[srcIdx++];
+		v.load();
+	};
+	const timeout = setTimeout(tryNext, 10000);
+	v.addEventListener("error", tryNext);
+	v.addEventListener("loadedmetadata", () => { settled = true; clearTimeout(timeout); }, { once: true });
+	v.addEventListener("timeupdate", () => {
+		if(v.duration) card._fill.style.width = (v.currentTime / v.duration) * 100 + "%";
+	});
+	v.addEventListener("play", () => { card.classList.add("playing"); card.classList.remove("paused"); syncPauseIcon(card); });
+	v.addEventListener("pause", () => { card.classList.remove("playing"); syncPauseIcon(card); });
+	tryNext();
+	return card;
+}
+
+function enableFake(card){
+	if(card._fake) return;
+	card.classList.add("fakemode");
+	card._fake = new FakePlayer(card.querySelector("canvas.fake"), card._item);
+	card._fake.onProgress = (p) => { card._fill.style.width = p * 100 + "%"; };
+	card._fake.playingState = false;
+	if(card.classList.contains("active")) startCard(card);
+}
+
+function syncPauseIcon(card){
+	const ov = card.querySelector(".play-overlay .pp");
+	const playing = card.classList.contains("playing") || (!card.classList.contains("paused") && card.classList.contains("active"));
+	ov.innerHTML = card.classList.contains("paused") || (!card.classList.contains("playing") && card.classList.contains("active") && !card._fakePlaying) ? SVG.play : SVG.pause;
+}
+
+function startCard(card){
+	if(card._fake){
+		card._fake.resize();
+		card._fake.start();
+		card._fakePlaying = true;
+		card.classList.add("playing");
+		card.classList.remove("paused");
+	}else{
+		card._video.muted = muted;
+		card._video.play().catch(() => {});
+	}
+}
+function stopCard(card){
+	if(card._fake){
+		card._fake.pause();
+		card._fakePlaying = false;
+	}else{
+		card._video.pause();
+	}
+	card.classList.remove("playing");
+}
+function togglePlay(card){
+	if(card._fake){
+		if(card._fakePlaying){ card._fake.pause(); card._fakePlaying = false; card.classList.add("paused"); card.classList.remove("playing"); }
+		else{ card._fake.start(); card._fakePlaying = true; card.classList.remove("paused"); card.classList.add("playing"); }
+		syncPauseIcon(card);
+	}else{
+		if(card._video.paused) card._video.play().catch(() => {});
+		else card._video.pause();
+	}
+}
+
+ITEMS.forEach((item, i) => cards.push(buildCard(item, i)));
+
+const io = new IntersectionObserver((entries) => {
+	for(const en of entries){
+		if(en.isIntersecting && en.intersectionRatio >= 0.55){
+			const idx = cards.indexOf(en.target);
+			if(idx === activeIdx) continue;
+			stopCard(cards[activeIdx]);
+			activeIdx = idx;
+			en.target.classList.add("active");
+			startCard(en.target);
+			const next = cards[idx + 1];
+			if(next && !next._fake && next._video.readyState === 0) next._video.load();
+		}
+	}
+}, { root: feed, threshold: [0, 0.55] });
+cards.forEach((c) => io.observe(c));
+cards[0].classList.add("active");
+startCard(cards[0]);
+
+function navigate(dir){
+	const idx = Math.min(Math.max(activeIdx + dir, 0), cards.length - 1);
+	if(idx === activeIdx) return;
+	feed.scrollTo({ top: idx * feed.clientHeight, behavior: "smooth" });
+}
+
+let wheelAcc = 0, wheelTime = 0;
+feed.addEventListener("wheel", (e) => {
+	if(anySheetOpen()) return;
+	e.preventDefault();
+	const now = performance.now();
+	if(now - wheelTime > 500){ wheelAcc = 0; wheelTime = now; }
+	wheelAcc += e.deltaY;
+	if(Math.abs(wheelAcc) > 55){
+		navigate(wheelAcc > 0 ? 1 : -1);
+		wheelAcc = 0;
+		wheelTime = now;
+	}
+}, { passive: false });
+
+document.addEventListener("keydown", (e) => {
+	if(e.key === "Escape"){ closeSheets(); return; }
+	if(anySheetOpen() || e.target.tagName === "INPUT") return;
+	if(e.key === "ArrowDown" || e.key === "PageDown"){ e.preventDefault(); navigate(1); }
+	else if(e.key === "ArrowUp" || e.key === "PageUp"){ e.preventDefault(); navigate(-1); }
+	else if(e.key === " "){ e.preventDefault(); togglePlay(cards[activeIdx]); }
+});
+
+function spawnHearts(card, x, y){
+	const big = document.createElement("div");
+	big.className = "big-heart";
+	big.textContent = "❤";
+	big.style.left = x + "px";
+	big.style.top = y + "px";
+	card.appendChild(big);
+	setTimeout(() => big.remove(), 950);
+	for(let i = 0; i < 6; i++){
+		const el = document.createElement("div");
+		el.className = "float-heart";
+		el.textContent = "❤";
+		el.style.left = x + (Math.random() * 70 - 35) + "px";
+		el.style.top = y - 10 + "px";
+		el.style.setProperty("--dx", (Math.random() * 90 - 45) + "px");
+		el.style.setProperty("--rot", (Math.random() * 70 - 35) + "deg");
+		el.style.animationDelay = i * 0.09 + "s";
+		el.style.fontSize = 16 + Math.random() * 14 + "px";
+		card.appendChild(el);
+		setTimeout(() => el.remove(), 1400 + i * 90);
+	}
+}
+
+function setLike(card, item, liked, anim){
+	if(item.liked !== liked){
+		item.liked = liked;
+		item.likes += liked ? 1 : -1;
+	}
+	card._likeBtn.classList.toggle("liked", item.liked);
+	card._likeCount.textContent = formatCount(item.likes);
+	if(anim && liked){
+		card._likeBtn.classList.remove("bump");
+		void card._likeBtn.offsetWidth;
+		card._likeBtn.classList.add("bump");
+	}
+}
+
+cards.forEach((card) => {
+	const item = card._item;
+	let clickTimer = null;
+	card.addEventListener("click", (e) => {
+		if(e.target.closest(".no-nav")) return;
+		if(clickTimer) return;
+		clickTimer = setTimeout(() => { clickTimer = null; togglePlay(card); }, 240);
+	});
+	card.addEventListener("dblclick", (e) => {
+		if(e.target.closest(".no-nav")) return;
+		clearTimeout(clickTimer);
+		clickTimer = null;
+		if(!item.liked) setLike(card, item, true, true);
+		const rect = card.getBoundingClientRect();
+		spawnHearts(card, e.clientX - rect.left, e.clientY - rect.top);
+	});
+
+	card._likeBtn.addEventListener("click", (e) => {
+		e.stopPropagation();
+		setLike(card, item, !item.liked, true);
+	});
+	card.querySelector(".comment-btn").addEventListener("click", (e) => {
+		e.stopPropagation();
+		openComments(card);
+	});
+	card.querySelector(".share-btn").addEventListener("click", (e) => {
+		e.stopPropagation();
+		openShare();
+	});
+	card._followBtn.addEventListener("click", (e) => {
+		e.stopPropagation();
+		item.followed = !item.followed;
+		card._followBtn.textContent = item.followed ? "✓" : "＋";
+		card._followBtn.classList.toggle("done", item.followed);
+		toast(item.followed ? `已关注 @${item.author}` : "已取消关注");
+	});
+	card.querySelector(".author-name").addEventListener("click", () => toast(`查看 @${item.author} 的主页（演示）`));
+
+	const mutePill = card.querySelector(".mute-pill");
+	if(mutePill){
+		mutePill.addEventListener("click", (e) => {
+			e.stopPropagation();
+			muted = false;
+			cards.forEach((c) => { if(!c._fake) c._video.muted = false; });
+			mutePill.textContent = "🔊 声音已开启";
+			setTimeout(() => { mutePill.style.transition = "opacity .4s"; mutePill.style.opacity = "0"; setTimeout(() => mutePill.remove(), 450); }, 1400);
+		});
+	}
+});
+
+const backdrop = $("#backdrop");
+const commentSheet = $("#commentSheet");
+const shareSheet = $("#shareSheet");
+
+function anySheetOpen(){ return commentSheet.classList.contains("open") || shareSheet.classList.contains("open"); }
+function closeSheets(){ backdrop.classList.remove("show"); commentSheet.classList.remove("open"); shareSheet.classList.remove("open"); }
+backdrop.addEventListener("click", closeSheets);
+
+let commentTarget = null;
+
+function commentNode(c){
+	const el = document.createElement("div");
+	el.className = "comment-item";
+	const color = c.mine ? "#2979ff" : AVATAR_COLORS[c.name.charCodeAt(0) % AVATAR_COLORS.length];
+	const label = c.mine ? "我" : (c.isAuthor ? "作" : c.name[0]);
+	const name = c.isAuthor ? "作者" : c.name;
+	el.innerHTML = `
+		<div class="c-avatar" style="background:${color}">${label}</div>
+		<div class="c-main">
+			<div class="c-name">${name}${c.isAuthor || c.mine ? '<span class="c-badge">作者</span>' : ""}</div>
+			<div class="c-text">${highlight(c.text)}</div>
+			<div class="c-meta"><span>${c.time}</span>${c.ip ? `<span>·</span><span>IP属地：${c.ip}</span>` : ""}</div>
+		</div>
+		<div class="c-like">${SVG.heart}<span>${c.likes}</span></div>`;
+	const likeBtn = el.querySelector(".c-like");
+	likeBtn.addEventListener("click", () => {
+		c.liked = !c.liked;
+		c.likes += c.liked ? 1 : -1;
+		likeBtn.classList.toggle("liked", c.liked);
+		likeBtn.querySelector("span").textContent = c.likes;
+	});
+	return el;
+}
+
+function openComments(card){
+	commentTarget = card;
+	const item = card._item;
+	$("#commentHeader").textContent = item.comments.length + "条评论";
+	const list = $("#commentList");
+	list.innerHTML = "";
+	item.comments.forEach((c) => list.appendChild(commentNode(c)));
+	backdrop.classList.add("show");
+	commentSheet.classList.add("open");
+}
+
+function sendComment(){
+	const input = $("#commentInput");
+	const text = input.value.trim();
+	if(!text || !commentTarget) return;
+	const c = { name:"我", mine:true, text, time:"刚刚", ip:"本地", likes:0, liked:false };
+	commentTarget._item.comments.unshift(c);
+	$("#commentList").prepend(commentNode(c));
+	$("#commentList").scrollTop = 0;
+	$("#commentHeader").textContent = commentTarget._item.comments.length + "条评论";
+	commentTarget._commentCount.textContent = commentTarget._item.comments.length;
+	input.value = "";
+	input.blur();
+	toast("评论发布成功");
+}
+$("#commentSend").addEventListener("click", sendComment);
+$("#commentInput").addEventListener("keydown", (e) => { if(e.key === "Enter") sendComment(); });
+
+function openShare(){
+	const grid = $("#shareGrid");
+	grid.innerHTML = "";
+	SHARE_TARGETS.forEach((t) => {
+		const el = document.createElement("div");
+		el.className = "share-item";
+		el.innerHTML = `<div class="share-icon" style="background:${t.color}22;border:1px solid ${t.color}55">${t.icon}</div><span>${t.name}</span>`;
+		el.addEventListener("click", () => {
+			if(t.name === "复制链接"){
+				try{ navigator.clipboard.writeText("https://v.douyin.com/demo-video/"); }catch(_){}
+			}
+			closeSheets();
+			toast(t.msg);
+		});
+		grid.appendChild(el);
+	});
+	backdrop.classList.add("show");
+	shareSheet.classList.add("open");
+}
+$("#shareCancel").addEventListener("click", closeSheets);
+
+$("#tabs").addEventListener("click", (e) => {
+	const tab = e.target.closest("span");
+	if(!tab || tab.classList.contains("active")) return;
+	if(tab.dataset.tab !== "推荐"){
+		toast("演示版仅提供「推荐」流");
+		return;
+	}
+});
+$("#searchBtn").addEventListener("click", () => toast("搜索功能仅演示"));
+$("#nav").addEventListener("click", (e) => {
+	const item = e.target.closest(".nav-item");
+	if(item){
+		if(item.dataset.nav === "首页") toast("已经是首页啦");
+		else toast(item.dataset.nav + "页仅演示");
+	}
+});
+$("#navPlus").addEventListener("click", () => toast("拍摄功能仅在手机App开放"));
+
+document.addEventListener("visibilitychange", () => {
+	const card = cards[activeIdx];
+	if(document.hidden) stopCard(card);
+	else if(!card.classList.contains("paused")) startCard(card);
+});
+
+window.addEventListener("resize", () => {
+	const card = cards[activeIdx];
+	if(card && card._fake) card._fake.resize();
+});
+</script>
+</body>
+</html>
