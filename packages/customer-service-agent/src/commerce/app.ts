@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { CommerceError, OrderService } from "../domain/order-service.ts";
 import { isRefundStatus } from "../domain/refund-status.ts";
+import { isSupportTicketStatus } from "../domain/support-ticket.ts";
 import type { CommerceStore, DraftItemInput } from "../domain/types.ts";
 
 interface CommerceAppOptions {
@@ -37,6 +38,8 @@ function errorStatus(error: CommerceError): number {
 			return 404;
 		case "DRAFT_NOT_CONFIRMED":
 		case "INSUFFICIENT_INVENTORY":
+		case "TICKET_NOT_ASSIGNED":
+		case "TICKET_NOT_OPEN":
 			return 409;
 		default:
 			return 400;
@@ -135,10 +138,13 @@ export function createCommerceApp(repository: CommerceStore, options: CommerceAp
 	});
 
 	/**
-	 * Applies the refund window on the server. `eligible: false` is a policy answer, so it is a
-	 * 200 response instead of an error: the agent must explain it, not retry it.
+	 * Writes a refund draft. This route is the model's only way to open a refund, and it never
+	 * creates a request: the customer's confirmation below is what does.
+	 *
+	 * `eligible: false` is a policy answer, so it is a 200 response instead of an error: the agent
+	 * must explain it, not retry it.
 	 */
-	app.post<{ Body: { orderId?: unknown; reason?: unknown } }>("/refund-requests", async (request) => {
+	app.post<{ Body: { orderId?: unknown; reason?: unknown } }>("/refund-drafts", async (request, reply) => {
 		const { orderId, reason } = request.body;
 		if (typeof orderId !== "string" || !orderId.trim()) {
 			throw new CommerceError("INVALID_INPUT", "orderId is required");
@@ -146,11 +152,45 @@ export function createCommerceApp(repository: CommerceStore, options: CommerceAp
 		if (reason !== undefined && typeof reason !== "string") {
 			throw new CommerceError("INVALID_INPUT", "reason must be a string when provided");
 		}
-		return await orders.requestRefund(
+		const proposal = await orders.proposeRefund(
 			requireUserId(request.headers),
 			orderId.trim(),
 			typeof reason === "string" ? reason.trim() : undefined,
 		);
+		return await reply.code(proposal.eligible ? 201 : 200).send(proposal);
+	});
+
+	/** Lets the client rebuild the refund confirmation card after a reload. */
+	app.get<{ Params: { id: string } }>("/refund-drafts/:id", async (request) => {
+		const draft = await repository.getRefundDraft(request.params.id);
+		if (!draft || draft.userId !== requireUserId(request.headers)) {
+			throw new CommerceError("NOT_FOUND", "Refund draft was not found for the current user");
+		}
+		return draft;
+	});
+
+	/**
+	 * Turns the customer's own confirmation into a real refund request.
+	 *
+	 * Requires the customer identity rather than the internal token, mirroring the order draft
+	 * confirmation: the agent has no way to call this, which is what makes the gate a gate.
+	 */
+	app.post<{ Params: { id: string } }>("/refund-drafts/:id/confirm", async (request) => {
+		return await orders.confirmRefundDraft(requireUserId(request.headers), request.params.id);
+	});
+
+	/**
+	 * The customer withdrawing their own request.
+	 *
+	 * Separate from the reviewer hook below because it is scoped to the caller: a customer may only
+	 * cancel a request on their own order, while the reviewer hook trusts the internal token.
+	 */
+	app.post<{ Body: { orderId?: unknown } }>("/refund-requests/cancel", async (request) => {
+		const { orderId } = request.body;
+		if (typeof orderId !== "string" || !orderId.trim()) {
+			throw new CommerceError("INVALID_INPUT", "orderId is required");
+		}
+		return await orders.cancelRefundRequest(requireUserId(request.headers), orderId.trim());
 	});
 
 	/** The customer's own refund requests, newest first. */
@@ -185,13 +225,79 @@ export function createCommerceApp(repository: CommerceStore, options: CommerceAp
 		},
 	);
 
-	app.post<{ Body: { summary?: unknown } }>("/support-tickets", async (request, reply) => {
-		if (typeof request.body?.summary !== "string" || !request.body.summary.trim()) {
+	app.post<{ Body: { summary?: unknown; conversationId?: unknown } }>("/support-tickets", async (request, reply) => {
+		const { summary, conversationId } = request.body ?? {};
+		if (typeof summary !== "string" || !summary.trim()) {
 			throw new CommerceError("INVALID_INPUT", "summary is required");
+		}
+		if (conversationId !== undefined && conversationId !== null && typeof conversationId !== "string") {
+			throw new CommerceError("INVALID_INPUT", "conversationId must be a string when provided");
 		}
 		return await reply
 			.code(201)
-			.send(await repository.createSupportTicket(requireUserId(request.headers), request.body.summary.trim()));
+			.send(
+				await repository.createSupportTicket(
+					requireUserId(request.headers),
+					summary.trim(),
+					typeof conversationId === "string" && conversationId.trim() ? conversationId.trim() : null,
+				),
+			);
+	});
+
+	/**
+	 * Desk endpoints. They carry no user identity: the desk works across customers, and these
+	 * three routes have no counterpart in the agent gateway, so the model can neither claim nor
+	 * close a ticket — it can only open one through `handoff_to_human`.
+	 */
+	app.get<{ Querystring: { status?: string; conversationId?: string; limit?: string } }>(
+		"/support-tickets",
+		async (request) => {
+			const { status, conversationId } = request.query;
+			if (status !== undefined && !isSupportTicketStatus(status)) {
+				throw new CommerceError("INVALID_INPUT", "status must be one of open, assigned, closed");
+			}
+			const parsed = Number(request.query.limit ?? 20);
+			const limit = Number.isFinite(parsed) ? Math.min(Math.max(Math.trunc(parsed), 1), 100) : 20;
+			return await repository.listSupportTickets({ status, conversationId, limit });
+		},
+	);
+
+	/** Lets the desk open one ticket, including the conversation the reply has to land in. */
+	app.get<{ Params: { id: string } }>("/support-tickets/:id", async (request) => {
+		const ticket = await repository.getSupportTicket(request.params.id);
+		if (!ticket) throw new CommerceError("NOT_FOUND", `Support ticket ${request.params.id} was not found`);
+		return ticket;
+	});
+
+	app.post<{ Params: { id: string }; Body: { assignee?: unknown } }>("/support-tickets/:id/claim", async (request) => {
+		const { assignee } = request.body ?? {};
+		if (typeof assignee !== "string" || !assignee.trim()) {
+			throw new CommerceError("INVALID_INPUT", "assignee is required");
+		}
+		const ticket = await repository.claimSupportTicket(request.params.id, assignee.trim());
+		if (ticket) return ticket;
+		// The compare-and-set only reports that it did not apply; separate "gone" from "raced".
+		const current = await repository.getSupportTicket(request.params.id);
+		if (!current) throw new CommerceError("NOT_FOUND", `Support ticket ${request.params.id} was not found`);
+		throw new CommerceError("TICKET_NOT_OPEN", `Support ticket ${request.params.id} is already ${current.status}`);
+	});
+
+	app.post<{ Params: { id: string }; Body: { note?: unknown } }>("/support-tickets/:id/close", async (request) => {
+		const { note } = request.body ?? {};
+		if (note !== undefined && typeof note !== "string") {
+			throw new CommerceError("INVALID_INPUT", "note must be a string when provided");
+		}
+		const ticket = await repository.closeSupportTicket(
+			request.params.id,
+			typeof note === "string" && note.trim() ? note.trim() : null,
+		);
+		if (ticket) return ticket;
+		const current = await repository.getSupportTicket(request.params.id);
+		if (!current) throw new CommerceError("NOT_FOUND", `Support ticket ${request.params.id} was not found`);
+		throw new CommerceError(
+			"TICKET_NOT_ASSIGNED",
+			`Support ticket ${request.params.id} is ${current.status}, only an assigned ticket can be closed`,
+		);
 	});
 
 	return app;

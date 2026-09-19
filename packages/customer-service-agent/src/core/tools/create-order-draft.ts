@@ -1,7 +1,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import type { CommerceGateway } from "../../agent/gateways.ts";
-import { type ToolRequestContext, textResult } from "./shared.ts";
+import { type ToolRequestContext, textResult, withRecoveryHint } from "./shared.ts";
 
 const createDraftSchema = Type.Object({
 	region: Type.String({ minLength: 1 }),
@@ -27,7 +27,9 @@ export function createCreateOrderDraftTool(
 		replay: "never",
 		executionMode: "sequential",
 		async execute(_toolCallId, params) {
-			const draft = await commerce.createOrderDraft(context.userId, params.region, params.items);
+			const draft = await withRecoveryHint(() =>
+				commerce.createOrderDraft(context.userId, params.region, params.items),
+			);
 			return textResult(
 				JSON.stringify({
 					draftId: draft.id,

@@ -23,5 +23,10 @@
 		"name": "refund-progress",
 		"input": "我上次申请的退款现在到哪一步了？",
 		"expectedTools": ["list_refund_requests"]
+	},
+	{
+		"name": "handoff-to-human",
+		"input": "你们的客服态度太差了，我要投诉，请转人工",
+		"expectedTools": ["handoff_to_human"]
 	}
 ]

@@ -15,14 +15,36 @@ export interface ConversationSummary {
 
 export interface ConversationDisplayMessage {
 	id: string;
-	role: "user" | "assistant";
+	/** `agent` is a human support reply, rendered differently from the model's own answers. */
+	role: "user" | "assistant" | "agent";
 	content: string;
+	/** Support agent who wrote it. Only set for `agent` messages. */
+	author?: string;
 }
 
 export interface ConversationHistory {
 	messages: ConversationDisplayMessage[];
 	/** Draft awaiting confirmation, so the confirm card survives a page reload. */
 	orderDraftId?: string;
+	/** Refund draft awaiting confirmation; same recovery trick as the order draft. */
+	refundDraftId?: string;
+	/** True while a claimed ticket points at this conversation. */
+	underHumanTakeover: boolean;
+}
+
+export interface RefundDraftSummary {
+	id: string;
+	orderId: string;
+	status: string;
+	amountCents: number;
+	reason: string | null;
+}
+
+export interface RefundDecisionSummary {
+	eligible: boolean;
+	refundId?: string;
+	code?: string;
+	message?: string;
 }
 
 export interface OrderDraftSummary {
@@ -80,6 +102,19 @@ export async function getOrderDraft(token: string, draftId: string): Promise<Ord
 
 export async function confirmDraft(token: string, draftId: string): Promise<{ id: string; status: string }> {
 	return await jsonRequest(`/api/order-drafts/${encodeURIComponent(draftId)}/confirm`, token, { method: "POST" });
+}
+
+export async function getRefundDraft(token: string, draftId: string): Promise<RefundDraftSummary> {
+	return await jsonRequest<RefundDraftSummary>(`/api/refund-drafts/${encodeURIComponent(draftId)}`, token, {
+		method: "GET",
+	});
+}
+
+/** The only path that creates a refund request. The agent has no equivalent call. */
+export async function confirmRefundDraft(token: string, draftId: string): Promise<RefundDecisionSummary> {
+	return await jsonRequest<RefundDecisionSummary>(`/api/refund-drafts/${encodeURIComponent(draftId)}/confirm`, token, {
+		method: "POST",
+	});
 }
 
 export async function streamChat(

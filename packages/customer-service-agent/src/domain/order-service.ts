@@ -1,12 +1,15 @@
-import { isRefundTransitionAllowed, type RefundStatus } from "./refund-status.ts";
+import { isRefundTransitionAllowed, REFUND_STATUS_LABELS, type RefundStatus } from "./refund-status.ts";
 import type {
+	CancelRefundResult,
 	CommerceRepository,
 	DraftItem,
 	DraftItemInput,
 	Order,
 	OrderDraft,
 	RefundDecision,
+	RefundDraft,
 	RefundListOptions,
+	RefundProposal,
 	RefundRequest,
 } from "./types.ts";
 
@@ -37,7 +40,9 @@ export type CommerceErrorCode =
 	| "FORBIDDEN"
 	| "INSUFFICIENT_INVENTORY"
 	| "INVALID_INPUT"
-	| "NOT_FOUND";
+	| "NOT_FOUND"
+	| "TICKET_NOT_ASSIGNED"
+	| "TICKET_NOT_OPEN";
 
 export class CommerceError extends Error {
 	readonly code: CommerceErrorCode;
@@ -128,29 +133,13 @@ export class OrderService {
 	 * exception, because a rejected window is a policy outcome, not a service failure.
 	 */
 	async requestRefund(userId: string, orderId: string, reason?: string): Promise<RefundDecision> {
-		const order = await this.repository.getOrder(userId, orderId);
-		if (!order) throw new CommerceError("NOT_FOUND", "Order was not found for the current user");
-		if (order.status === "cancelled") {
-			throw new CommerceError("INVALID_INPUT", "A cancelled order cannot be refunded");
-		}
+		const order = await this.requireRefundableOrder(userId, orderId);
 
 		const active = await this.repository.findActiveRefundRequest(order.id);
 		if (active) return toRefundDecision(active);
 
-		const submittedAt = Date.parse(order.createdAt);
-		if (!Number.isFinite(submittedAt)) {
-			throw new CommerceError("INVALID_INPUT", "Order submission time is unusable");
-		}
-		const elapsedDays = (this.now().getTime() - submittedAt) / DAY_MS;
-		if (elapsedDays > REFUND_WINDOW_DAYS) {
-			return {
-				eligible: false,
-				code: "REFUND_WINDOW_EXPIRED",
-				orderCreatedAt: order.createdAt,
-				windowDays: REFUND_WINDOW_DAYS,
-				message: `Order was submitted ${Math.floor(elapsedDays)} days ago, beyond the ${REFUND_WINDOW_DAYS}-day refund window`,
-			};
-		}
+		const expired = this.expiredRefundDecision(order);
+		if (expired) return expired;
 
 		const request = await this.repository.createRefundRequest({
 			orderId: order.id,
@@ -160,6 +149,124 @@ export class OrderService {
 			orderCreatedAt: order.createdAt,
 		});
 		return toRefundDecision(request);
+	}
+
+	/**
+	 * Opens a refund the model proposes but cannot commit.
+	 *
+	 * This is the gate. It writes a draft, never a request, so a customer asking "can I return
+	 * this?" cannot end up with a live application they never agreed to. The window is checked
+	 * here so the confirmation card can state what is being agreed to, and checked again on
+	 * confirmation because days can pass in between.
+	 */
+	async proposeRefund(userId: string, orderId: string, reason?: string): Promise<RefundProposal> {
+		const order = await this.requireRefundableOrder(userId, orderId);
+
+		const expired = this.expiredRefundDecision(order);
+		if (expired) return expired;
+
+		// Asking twice must not pile up drafts: an unattended draft is reused, and one the customer
+		// already confirmed is visible as an active request through the one-request-per-order index.
+		const existing = await this.repository.findAwaitingRefundDraft(order.id);
+		const draft =
+			existing ??
+			(await this.repository.createRefundDraft({
+				orderId: order.id,
+				userId,
+				reason: reason?.trim() || null,
+				amountCents: order.totalCents,
+			}));
+
+		return {
+			eligible: true,
+			draftId: draft.id,
+			requiresConfirmation: true,
+			amountCents: draft.amountCents,
+			orderCreatedAt: order.createdAt,
+			windowDays: REFUND_WINDOW_DAYS,
+		};
+	}
+
+	/**
+	 * Turns the customer's confirmation into an actual request.
+	 *
+	 * The window is re-checked rather than trusted from the draft, so a draft that has since gone
+	 * stale stays unconfirmed and reports why instead of writing a request the review workflow
+	 * would only have to reject. Marking the draft first is a compare-and-set, so a double tap
+	 * cannot produce two requests.
+	 */
+	async confirmRefundDraft(userId: string, draftId: string): Promise<RefundDecision> {
+		const draft = await this.requireOwnedRefundDraft(userId, draftId);
+		if (draft.status === "submitted") return await this.replaySubmittedDraft(draft);
+
+		const order = await this.requireRefundableOrder(userId, draft.orderId);
+		const expired = this.expiredRefundDecision(order);
+		if (expired) return expired;
+
+		const claimed = await this.repository.markRefundDraftSubmitted(draft.id);
+		if (!claimed) return await this.replaySubmittedDraft(draft);
+
+		return await this.requestRefund(userId, draft.orderId, draft.reason ?? undefined);
+	}
+
+	/**
+	 * Withdraws a refund request the customer no longer wants.
+	 *
+	 * An active request blocks its order through the unique index, so without this the customer
+	 * would have to wait for a human to reject it before asking again — including when the first
+	 * request was not really what they wanted. Only requests that have not started paying out can
+	 * be withdrawn: `approved` means the money is already on its way.
+	 */
+	async cancelRefundRequest(userId: string, orderId: string): Promise<CancelRefundResult> {
+		const order = await this.repository.getOrder(userId, orderId);
+		if (!order) throw new CommerceError("NOT_FOUND", "Order was not found for the current user");
+
+		const active = await this.repository.findActiveRefundRequest(order.id);
+		if (!active) {
+			return {
+				cancelled: false,
+				orderId: order.id,
+				code: "NO_ACTIVE_REQUEST",
+				message: "There is no refund request waiting for this order",
+			};
+		}
+		if (!isRefundTransitionAllowed(active.status, "cancelled")) {
+			return {
+				cancelled: false,
+				orderId: order.id,
+				code: "REFUND_NOT_CANCELLABLE",
+				status: active.status,
+				statusLabel: REFUND_STATUS_LABELS[active.status],
+				message: `A refund request that is ${active.status} can no longer be withdrawn`,
+			};
+		}
+
+		const updated = await this.repository.updateRefundStatus({
+			id: active.id,
+			from: active.status,
+			to: "cancelled",
+			actor: userId,
+			note: null,
+		});
+		if (updated) {
+			return {
+				cancelled: true,
+				orderId: order.id,
+				refundId: updated.id,
+				status: updated.status,
+				statusLabel: REFUND_STATUS_LABELS[updated.status],
+			};
+		}
+
+		// A reviewer moved the request between our read and our write; their decision stands.
+		const raced = await this.repository.getRefundRequest(active.id);
+		return {
+			cancelled: false,
+			orderId: order.id,
+			code: "REFUND_NOT_CANCELLABLE",
+			...(raced ? { status: raced.status, statusLabel: REFUND_STATUS_LABELS[raced.status] } : {}),
+			message: `Refund request ${active.id} was changed by another actor`,
+		};
 	}
 
 	/**
@@ -223,5 +330,52 @@ export class OrderService {
 			throw new CommerceError("FORBIDDEN", "Order draft does not belong to the current user");
 		}
 		return draft;
+	}
+
+	private async requireRefundableOrder(userId: string, orderId: string): Promise<Order> {
+		const order = await this.repository.getOrder(userId, orderId);
+		if (!order) throw new CommerceError("NOT_FOUND", "Order was not found for the current user");
+		if (order.status === "cancelled") {
+			throw new CommerceError("INVALID_INPUT", "A cancelled order cannot be refunded");
+		}
+		return order;
+	}
+
+	private async requireOwnedRefundDraft(userId: string, draftId: string): Promise<RefundDraft> {
+		const draft = await this.repository.getRefundDraft(draftId);
+		if (!draft) throw new CommerceError("NOT_FOUND", `Refund draft ${draftId} was not found`);
+		if (draft.userId !== userId) {
+			throw new CommerceError("FORBIDDEN", "Refund draft does not belong to the current user");
+		}
+		return draft;
+	}
+
+	/**
+	 * Confirming a draft that is already submitted replays its request instead of failing.
+	 *
+	 * A customer who taps twice, or reloads and taps again, gets the same answer rather than an
+	 * error about something they cannot see.
+	 */
+	private async replaySubmittedDraft(draft: RefundDraft): Promise<RefundDecision> {
+		const active = await this.repository.findActiveRefundRequest(draft.orderId);
+		if (active) return toRefundDecision(active);
+		throw new CommerceError("INVALID_INPUT", `Refund draft ${draft.id} was already submitted`);
+	}
+
+	/** Undefined while the window is open, so callers can tell "still eligible" from "expired". */
+	private expiredRefundDecision(order: Order): Extract<RefundDecision, { eligible: false }> | undefined {
+		const submittedAt = Date.parse(order.createdAt);
+		if (!Number.isFinite(submittedAt)) {
+			throw new CommerceError("INVALID_INPUT", "Order submission time is unusable");
+		}
+		const elapsedDays = (this.now().getTime() - submittedAt) / DAY_MS;
+		if (elapsedDays <= REFUND_WINDOW_DAYS) return undefined;
+		return {
+			eligible: false,
+			code: "REFUND_WINDOW_EXPIRED",
+			orderCreatedAt: order.createdAt,
+			windowDays: REFUND_WINDOW_DAYS,
+			message: `Order was submitted ${Math.floor(elapsedDays)} days ago, beyond the ${REFUND_WINDOW_DAYS}-day refund window`,
+		};
 	}
 }

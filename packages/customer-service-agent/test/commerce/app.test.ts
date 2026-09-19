@@ -11,6 +11,38 @@ function createRepository(now?: () => Date): InMemoryCommerceRepository {
 	});
 }
 
+/**
+ * Walks the refund gate the way the browser does: propose, then confirm.
+ *
+ * Tests that are about the request lifecycle rather than the gate itself use this so they do not
+ * have to repeat both calls at every site.
+ */
+async function confirmRefund(
+	app: FastifyInstance,
+	headers: Record<string, string>,
+	orderId: string,
+	reason?: string,
+): Promise<{ refundId: string }> {
+	const proposed = await app.inject({
+		method: "POST",
+		url: "/refund-drafts",
+		headers,
+		payload: { orderId, reason },
+	});
+	if (proposed.statusCode !== 201) {
+		throw new Error(`expected a refund draft, got ${proposed.statusCode}: ${proposed.body}`);
+	}
+	const confirmed = await app.inject({
+		method: "POST",
+		url: `/refund-drafts/${proposed.json().draftId}/confirm`,
+		headers,
+	});
+	if (confirmed.statusCode !== 200) {
+		throw new Error(`expected a confirmed refund, got ${confirmed.statusCode}: ${confirmed.body}`);
+	}
+	return { refundId: confirmed.json().refundId as string };
+}
+
 async function submitOrder(
 	app: FastifyInstance,
 	headers: Record<string, string>,
@@ -168,32 +200,81 @@ describe("commerce HTTP API", () => {
 		await app.close();
 	});
 
-	it("records a refund request inside the window and reuses it for a repeat request", async () => {
+	// The gate at the HTTP boundary: proposing writes a draft, and only the confirm route — which
+	// the agent cannot reach — can turn it into a request.
+	it("writes a draft on proposal and a request only after confirmation", async () => {
 		const app = createCommerceApp(createRepository());
 		const headers = { "x-user-id": "user-1" };
 		const { orderId } = await submitOrder(app, headers, "refund-key-1");
 
-		const first = await app.inject({
+		const proposed = await app.inject({
 			method: "POST",
-			url: "/refund-requests",
+			url: "/refund-drafts",
 			headers,
 			payload: { orderId, reason: "不想要了" },
 		});
-		const second = await app.inject({ method: "POST", url: "/refund-requests", headers, payload: { orderId } });
+		const beforeConfirmation = await app.inject({ method: "GET", url: "/refund-requests", headers });
 
-		expect(first.statusCode).toBe(200);
-		expect(first.json()).toMatchObject({
+		expect(proposed.statusCode).toBe(201);
+		expect(proposed.json()).toMatchObject({
 			eligible: true,
-			status: "pending_review",
+			requiresConfirmation: true,
 			amountCents: 39900,
 			windowDays: 7,
 		});
-		expect(second.json().refundId).toBe(first.json().refundId);
+		expect(proposed.json().refundId).toBeUndefined();
+		expect(beforeConfirmation.json()).toEqual([]);
+
+		const confirmed = await app.inject({
+			method: "POST",
+			url: `/refund-drafts/${proposed.json().draftId}/confirm`,
+			headers,
+		});
+
+		expect(confirmed.statusCode).toBe(200);
+		expect(confirmed.json()).toMatchObject({ eligible: true, status: "pending_review" });
+		const afterConfirmation = await app.inject({ method: "GET", url: "/refund-requests", headers });
+		expect(afterConfirmation.json()).toHaveLength(1);
+		await app.close();
+	});
+
+	it("reuses the open draft for a repeat proposal", async () => {
+		const app = createCommerceApp(createRepository());
+		const headers = { "x-user-id": "user-1" };
+		const { orderId } = await submitOrder(app, headers, "refund-key-1b");
+
+		const first = await app.inject({ method: "POST", url: "/refund-drafts", headers, payload: { orderId } });
+		const second = await app.inject({ method: "POST", url: "/refund-drafts", headers, payload: { orderId } });
+
+		expect(second.json().draftId).toBe(first.json().draftId);
+		await app.close();
+	});
+
+	it("replays the request when the same draft is confirmed twice", async () => {
+		const app = createCommerceApp(createRepository());
+		const headers = { "x-user-id": "user-1" };
+		const { orderId } = await submitOrder(app, headers, "refund-key-1c");
+		const proposed = await app.inject({ method: "POST", url: "/refund-drafts", headers, payload: { orderId } });
+
+		const first = await app.inject({
+			method: "POST",
+			url: `/refund-drafts/${proposed.json().draftId}/confirm`,
+			headers,
+		});
+		const second = await app.inject({
+			method: "POST",
+			url: `/refund-drafts/${proposed.json().draftId}/confirm`,
+			headers,
+		});
+
+		expect(first.json().refundId).toBe(second.json().refundId);
+		const requests = await app.inject({ method: "GET", url: "/refund-requests", headers });
+		expect(requests.json()).toHaveLength(1);
 		await app.close();
 	});
 
 	// The refund window is measured against the order submission time, not against the draft or review time.
-	it("refuses a refund request for an order past the window", async () => {
+	it("refuses to propose a refund for an order past the window", async () => {
 		let now = new Date("2026-09-01T00:00:00.000Z");
 		const app = createCommerceApp(createRepository(() => now));
 		const { orderId } = await submitOrder(app, { "x-user-id": "user-1" }, "refund-key-2");
@@ -201,7 +282,7 @@ describe("commerce HTTP API", () => {
 		now = new Date("2026-09-17T00:00:00.000Z");
 		const response = await app.inject({
 			method: "POST",
-			url: "/refund-requests",
+			url: "/refund-drafts",
 			headers: { "x-user-id": "user-1" },
 			payload: { orderId },
 		});
@@ -211,13 +292,13 @@ describe("commerce HTTP API", () => {
 		await app.close();
 	});
 
-	it("does not refund another user's order", async () => {
+	it("does not propose a refund for another user's order", async () => {
 		const app = createCommerceApp(createRepository());
 		const { orderId } = await submitOrder(app, { "x-user-id": "user-1" }, "refund-key-3");
 
 		const response = await app.inject({
 			method: "POST",
-			url: "/refund-requests",
+			url: "/refund-drafts",
 			headers: { "x-user-id": "user-2" },
 			payload: { orderId },
 		});
@@ -227,12 +308,33 @@ describe("commerce HTTP API", () => {
 		await app.close();
 	});
 
-	it("requires the order id to submit a refund request", async () => {
+	it("refuses to confirm another user's draft", async () => {
+		const app = createCommerceApp(createRepository());
+		const { orderId } = await submitOrder(app, { "x-user-id": "user-1" }, "refund-key-3b");
+		const proposed = await app.inject({
+			method: "POST",
+			url: "/refund-drafts",
+			headers: { "x-user-id": "user-1" },
+			payload: { orderId },
+		});
+
+		const response = await app.inject({
+			method: "POST",
+			url: `/refund-drafts/${proposed.json().draftId}/confirm`,
+			headers: { "x-user-id": "user-2" },
+		});
+
+		expect(response.statusCode).toBe(403);
+		expect(response.json()).toMatchObject({ code: "FORBIDDEN" });
+		await app.close();
+	});
+
+	it("requires the order id to open a refund draft", async () => {
 		const app = createCommerceApp(createRepository());
 
 		const response = await app.inject({
 			method: "POST",
-			url: "/refund-requests",
+			url: "/refund-drafts",
 			headers: { "x-user-id": "user-1" },
 			payload: { reason: "不想要了" },
 		});
@@ -247,8 +349,8 @@ describe("commerce HTTP API", () => {
 		const headers = { "x-user-id": "user-1" };
 		const first = await submitOrder(app, headers, "refund-list-key-1");
 		const second = await submitOrder(app, headers, "refund-list-key-2");
-		await app.inject({ method: "POST", url: "/refund-requests", headers, payload: { orderId: first.orderId } });
-		await app.inject({ method: "POST", url: "/refund-requests", headers, payload: { orderId: second.orderId } });
+		await confirmRefund(app, headers, first.orderId);
+		await confirmRefund(app, headers, second.orderId);
 
 		const mine = await app.inject({ method: "GET", url: "/refund-requests", headers });
 		const foreign = await app.inject({
@@ -270,8 +372,7 @@ describe("commerce HTTP API", () => {
 		const app = createCommerceApp(createRepository());
 		const headers = { "x-user-id": "user-1" };
 		const { orderId } = await submitOrder(app, headers, "refund-review-key");
-		const created = await app.inject({ method: "POST", url: "/refund-requests", headers, payload: { orderId } });
-		const refundId = created.json().refundId as string;
+		const { refundId } = await confirmRefund(app, headers, orderId);
 
 		const handedOff = await app.inject({
 			method: "POST",
@@ -304,8 +405,7 @@ describe("commerce HTTP API", () => {
 		const app = createCommerceApp(createRepository());
 		const headers = { "x-user-id": "user-1" };
 		const { orderId } = await submitOrder(app, headers, "refund-illegal-key");
-		const created = await app.inject({ method: "POST", url: "/refund-requests", headers, payload: { orderId } });
-		const refundId = created.json().refundId as string;
+		const { refundId } = await confirmRefund(app, headers, orderId);
 
 		const skipped = await app.inject({
 			method: "POST",
@@ -322,8 +422,7 @@ describe("commerce HTTP API", () => {
 		const app = createCommerceApp(createRepository());
 		const headers = { "x-user-id": "user-1" };
 		const { orderId } = await submitOrder(app, headers, "refund-payload-key");
-		const created = await app.inject({ method: "POST", url: "/refund-requests", headers, payload: { orderId } });
-		const refundId = created.json().refundId as string;
+		const { refundId } = await confirmRefund(app, headers, orderId);
 
 		const unknownStatus = await app.inject({
 			method: "POST",

@@ -1,0 +1,236 @@
+:root {
+	font-family: Inter, "Microsoft YaHei", system-ui, sans-serif;
+	color: #17201d;
+	background: #eef0eb;
+	font-synthesis: none;
+	--ink: #17201d;
+	--muted: #66716b;
+	--line: #cfd5cf;
+	--paper: #f9faf7;
+	--surface: #ffffff;
+	--accent: #12664f;
+	--accent-dark: #0b4939;
+	--desk: #c98a2e;
+	--desk-soft: #fdf6e3;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; height: 100%; overflow: hidden; }
+button, input, textarea { font: inherit; }
+button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid #83b7a7; outline-offset: 2px; }
+button:disabled { cursor: not-allowed; opacity: 0.55; }
+h1, h2, h3 { margin: 0; }
+.eyebrow { margin: 0; color: #789b90; font-size: 0.6875rem; font-weight: 800; letter-spacing: 0.16em; }
+
+/* Entry gate. The desk is internal, so it asks for the service token instead of a customer login. */
+.desk-gate { display: grid; place-items: center; min-height: 100dvh; padding: 1.5rem; }
+.desk-gate form {
+	display: grid;
+	gap: 0.75rem;
+	width: min(28rem, 100%);
+	padding: 2rem;
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-top: 4px solid var(--desk);
+}
+.desk-gate h1 { font-family: Georgia, "Songti SC", serif; font-size: 1.75rem; }
+.gate-hint { margin: 0; color: var(--muted); font-size: 0.8125rem; line-height: 1.6; }
+.desk-gate label { margin-top: 0.5rem; font-size: 0.75rem; font-weight: 800; }
+.desk-gate input, .desk-identity input, .detail-actions input {
+	padding: 0.625rem 0.75rem;
+	color: var(--ink);
+	background: #fbfcfa;
+	border: 1px solid #aeb7b0;
+	border-radius: 0.25rem;
+}
+.desk-gate button, .detail-actions button[type="submit"] {
+	min-height: 2.75rem;
+	padding: 0 1rem;
+	color: #fff;
+	font-weight: 700;
+	background: var(--accent);
+	border: 0;
+	border-radius: 0.25rem;
+	cursor: pointer;
+}
+.desk-gate button:hover:not(:disabled), .detail-actions button[type="submit"]:hover:not(:disabled) { background: var(--accent-dark); }
+
+.desk-shell { display: flex; flex-direction: column; height: 100vh; height: 100dvh; overflow: hidden; }
+.desk-topbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem;
+	flex: none;
+	padding: 0.875rem clamp(1rem, 4vw, 3rem);
+	color: var(--paper);
+	background: var(--ink);
+	border-bottom: 4px solid var(--desk);
+}
+.desk-topbar h1 { margin-top: 0.125rem; font-family: Georgia, "Songti SC", serif; font-size: clamp(1.25rem, 2.5vw, 1.75rem); }
+.desk-identity { display: flex; align-items: center; gap: 0.5rem; }
+.desk-identity label { font-size: 0.75rem; font-weight: 800; }
+.desk-identity input { width: 8rem; }
+.ghost-button {
+	flex: none;
+	padding: 0.375rem 0.625rem;
+	color: var(--accent-dark);
+	font-size: 0.75rem;
+	font-weight: 700;
+	background: transparent;
+	border: 1px solid #b6c3b9;
+	border-radius: 0.25rem;
+	cursor: pointer;
+}
+.ghost-button:hover:not(:disabled) { background: #e3e7e0; }
+.desk-topbar .ghost-button { color: #d4ddd8; border-color: #4c5a53; }
+.desk-topbar .ghost-button:hover:not(:disabled) { background: #2b3733; }
+
+.desk-workspace {
+	display: grid;
+	grid-template-columns: minmax(17rem, 22rem) minmax(0, 1fr);
+	flex: 1 1 auto;
+	min-height: 0;
+	width: 100%;
+	max-width: 96rem;
+	margin: 0 auto;
+}
+
+.desk-queue {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	overflow: hidden;
+	background: #e5e8e1;
+	border-right: 1px solid var(--line);
+}
+.queue-tabs { display: flex; flex: none; gap: 0.25rem; padding: 1rem 1rem 0; }
+.queue-tab {
+	flex: 1 1 auto;
+	padding: 0.5rem 0.25rem;
+	color: var(--muted);
+	font-size: 0.8125rem;
+	font-weight: 700;
+	background: transparent;
+	border: 1px solid transparent;
+	border-bottom: 2px solid transparent;
+	cursor: pointer;
+}
+.queue-tab--active { color: var(--accent-dark); background: var(--surface); border-color: #b6c3b9; border-bottom-color: var(--accent); }
+.queue-tab span {
+	display: inline-block;
+	min-width: 1.25rem;
+	margin-left: 0.25rem;
+	padding: 0 0.25rem;
+	color: #fff;
+	font-size: 0.6875rem;
+	background: var(--accent);
+	border-radius: 0.625rem;
+}
+.queue-hint { flex: none; margin: 0; padding: 0.75rem 1rem; color: var(--muted); font-size: 0.6875rem; line-height: 1.5; }
+.ticket-list {
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	margin: 0;
+	padding: 0 1rem 1rem;
+	list-style: none;
+	overscroll-behavior: contain;
+}
+.ticket-empty { padding: 0.5rem 0.25rem; color: var(--muted); font-size: 0.8125rem; }
+.ticket-item {
+	display: block;
+	width: 100%;
+	padding: 0.625rem 0.75rem;
+	text-align: left;
+	background: transparent;
+	border: 1px solid transparent;
+	border-radius: 0.25rem;
+	cursor: pointer;
+}
+.ticket-item:hover { background: #dde2da; }
+.ticket-item--active { background: var(--surface); border-color: #b6c3b9; }
+.ticket-summary {
+	display: -webkit-box;
+	overflow: hidden;
+	font-size: 0.8125rem;
+	line-height: 1.45;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+}
+.ticket-meta { display: block; margin-top: 0.25rem; color: var(--muted); font-family: "Cascadia Mono", monospace; font-size: 0.6875rem; }
+.ticket-tag {
+	display: inline-block;
+	margin-top: 0.375rem;
+	padding: 0.0625rem 0.375rem;
+	color: var(--accent-dark);
+	font-size: 0.625rem;
+	font-weight: 700;
+	background: #d8e4dc;
+	border-radius: 0.125rem;
+}
+.ticket-tag--warn { color: #7a4d00; background: var(--desk-soft); }
+
+.desk-detail {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	overflow: hidden;
+	padding: 1.25rem 1.5rem 0;
+	background: var(--paper);
+}
+.detail-empty { margin: 0; color: var(--muted); font-size: 0.875rem; }
+.detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex: none; }
+.detail-head h2 { margin: 0.25rem 0 0; font-size: 1.0625rem; line-height: 1.45; }
+.detail-meta { margin: 0.375rem 0 0; color: var(--muted); font-family: "Cascadia Mono", monospace; font-size: 0.6875rem; }
+
+.detail-actions {
+	display: grid;
+	gap: 0.625rem;
+	flex: none;
+	margin-top: 1rem;
+	padding: 0.875rem 1rem;
+	background: var(--desk-soft);
+	border-left: 3px solid var(--desk);
+}
+.detail-actions p { margin: 0; color: #7a4d00; font-size: 0.8125rem; line-height: 1.55; }
+.detail-actions label { font-size: 0.75rem; font-weight: 800; }
+.detail-actions button { min-height: 2.5rem; }
+.action-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.action-row input { flex: 1 1 10rem; min-width: 0; }
+.action-row .ghost-button { min-height: 2.5rem; }
+
+.desk-notice { flex: none; margin: 0.875rem 0 0; padding: 0.5rem 0.75rem; color: var(--accent-dark); font-size: 0.8125rem; background: #dce9e2; border-left: 3px solid var(--accent); }
+.desk-error { flex: none; margin: 0.875rem 0 0; padding: 0.5rem 0.75rem; color: #8a2f1f; font-size: 0.8125rem; background: #fbe9e5; border-left: 3px solid #b04a34; }
+
+.transcript {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	margin-top: 1rem;
+	padding-bottom: 1.5rem;
+	overscroll-behavior: contain;
+}
+.bubble { max-width: 44rem; margin-bottom: 1rem; }
+.bubble strong { display: block; margin-bottom: 0.25rem; font-size: 0.6875rem; color: var(--muted); }
+.bubble p { margin: 0; white-space: pre-wrap; line-height: 1.6; }
+.bubble--user { margin-left: auto; padding: 0.75rem 0.875rem; color: #fff; background: var(--accent); border-radius: 0.25rem; }
+.bubble--user strong { color: #cfe4da; }
+.bubble--assistant { padding-left: 0.875rem; border-left: 3px solid #9fb4a9; }
+/* A desk reply is highlighted so an operator can see which answers already went out. */
+.bubble--agent { padding: 0.75rem 0.875rem; background: var(--desk-soft); border-left: 3px solid var(--desk); border-radius: 0.25rem; }
+.bubble--agent strong { color: #96650f; }
+
+@media (max-width: 900px) {
+	.desk-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+	.desk-queue { max-height: 15rem; border-right: 0; border-bottom: 1px solid var(--line); }
+	.desk-topbar { align-items: flex-start; }
+	.desk-detail { padding: 1rem 1rem 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	* { scroll-behavior: auto !important; }
+}

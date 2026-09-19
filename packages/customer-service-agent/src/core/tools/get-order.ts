@@ -1,7 +1,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import type { CommerceGateway } from "../../agent/gateways.ts";
-import { type ToolRequestContext, textResult } from "./shared.ts";
+import { type ToolRequestContext, textResult, withRecoveryHint } from "./shared.ts";
 
 const getOrderSchema = Type.Object({ orderId: Type.String({ minLength: 1 }) });
 
@@ -17,7 +17,7 @@ export function createGetOrderTool(
 		parameters: getOrderSchema,
 		replay: "safe",
 		async execute(_toolCallId, params) {
-			const order = await commerce.getOrder(context.userId, params.orderId);
+			const order = await withRecoveryHint(() => commerce.getOrder(context.userId, params.orderId));
 			return textResult(JSON.stringify(order), { orderId: params.orderId });
 		},
 	};

@@ -2,10 +2,12 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 import {
 	type AgentStreamPayload,
 	confirmDraft,
+	confirmRefundDraft,
 	type ConversationDisplayMessage,
 	type ConversationSummary,
 	createConversation,
 	getOrderDraft,
+	getRefundDraft,
 	listConversations,
 	loadConversationMessages,
 	loginDemo,
@@ -15,8 +17,16 @@ import { toPlainText } from "./text.ts";
 
 interface ChatMessage {
 	id: string;
-	role: "assistant" | "user" | "status";
+	/** `agent` is a human support reply; `status` is a local progress note, not a message. */
+	role: "assistant" | "user" | "status" | "agent";
 	content: string;
+	/** Support agent who wrote it. Only set for `agent` messages. */
+	author?: string;
+	/**
+	 * True for messages only this browser knows about — the welcome line and progress notes.
+	 * Everything else comes from the transcript, so a poll can rebuild it without dropping these.
+	 */
+	local?: true;
 }
 
 interface PendingDraft {
@@ -25,7 +35,29 @@ interface PendingDraft {
 	orderId?: string;
 }
 
+/**
+ * A refund the agent proposed. Nothing has been applied for yet: the button below is what creates
+ * the request, which is why the agent cannot open one on its own.
+ */
+interface PendingRefundDraft {
+	id: string;
+	state: "pending" | "submitting" | "submitted";
+	/** Set when the draft can no longer be confirmed, so the card explains instead of retrying. */
+	blockedReason?: string;
+}
+
 const TITLE_MAX_LENGTH = 40;
+
+/** How often an open conversation re-reads its transcript while it waits for a reply. */
+const POLL_INTERVAL_MS = 3000;
+
+/** A poll only counts as new when the server grew; the same length means the same transcript. */
+function mergeServerHistory(current: ChatMessage[], history: ConversationDisplayMessage[]): ChatMessage[] {
+	if (current.filter((message) => !message.local).length === history.length) return current;
+	const localNotes = current.filter((message) => message.local);
+	const transcript = history.length > 0 ? toChatMessages(history) : [welcomeMessage()];
+	return [...transcript, ...localNotes];
+}
 
 function messageId(): string {
 	return crypto.randomUUID();
@@ -36,15 +68,21 @@ function welcomeMessage(): ChatMessage {
 		id: messageId(),
 		role: "assistant",
 		content: "你好，我可以帮你查询商品、库存、订单和售后政策，也可以创建待确认的订单草稿。",
+		local: true,
 	};
 }
 
 function statusMessage(content: string): ChatMessage {
-	return { id: messageId(), role: "status", content };
+	return { id: messageId(), role: "status", content, local: true };
 }
 
 function toChatMessages(messages: ConversationDisplayMessage[]): ChatMessage[] {
-	return messages.map((message) => ({ id: message.id, role: message.role, content: message.content }));
+	return messages.map((message) => ({
+		id: message.id,
+		role: message.role,
+		content: message.content,
+		...(message.author === undefined ? {} : { author: message.author }),
+	}));
 }
 
 function formatTimestamp(iso: string): string {
@@ -67,11 +105,16 @@ export function App() {
 	const [conversationId, setConversationId] = useState("");
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const [drafts, setDrafts] = useState<Record<string, PendingDraft>>({});
+	const [refundDrafts, setRefundDrafts] = useState<Record<string, PendingRefundDraft>>({});
 	const [input, setInput] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [loadingHistory, setLoadingHistory] = useState(true);
+	const [underHumanTakeover, setUnderHumanTakeover] = useState(false);
 	const [connectionState, setConnectionState] = useState("正在连接服务…");
 	const endRef = useRef<HTMLDivElement>(null);
+	const messageListRef = useRef<HTMLDivElement>(null);
+	/** Read by the poller, which must not be torn down and rebuilt every time a turn starts. */
+	const busyRef = useRef(false);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -87,8 +130,10 @@ export function App() {
 					if (cancelled) return;
 					setConversations(existing);
 					setConversationId(latest.id);
+					setUnderHumanTakeover(history.underHumanTakeover);
 					setMessages(history.messages.length > 0 ? toChatMessages(history.messages) : [welcomeMessage()]);
 					await restoreDraft(auth.token, latest.id, history.orderDraftId);
+					await restoreRefundDraft(auth.token, latest.id, history.refundDraftId);
 				} else {
 					const id = await createConversation(auth.token);
 					if (cancelled) return;
@@ -110,10 +155,46 @@ export function App() {
 	}, []);
 
 	useEffect(() => {
-		endRef.current?.scrollIntoView({ behavior: "smooth" });
+		busyRef.current = busy;
+	}, [busy]);
+
+	/**
+	 * The browser has no push channel, so an open conversation re-reads its transcript on a timer.
+	 * That is what makes a desk reply appear on its own instead of waiting for a page reload.
+	 */
+	useEffect(() => {
+		if (!token || !conversationId || loadingHistory) return;
+		let cancelled = false;
+		const timer = setInterval(() => {
+			if (cancelled || busyRef.current || document.visibilityState !== "visible") return;
+			void (async () => {
+				try {
+					const history = await loadConversationMessages(token, conversationId);
+					if (cancelled) return;
+					setUnderHumanTakeover(history.underHumanTakeover);
+					setMessages((current) => mergeServerHistory(current, history.messages));
+				} catch {
+					// A dropped poll is not a conversation error; the next tick retries silently.
+				}
+			})();
+		}, POLL_INTERVAL_MS);
+		return () => {
+			cancelled = true;
+			clearInterval(timer);
+		};
+	}, [token, conversationId, loadingHistory]);
+
+	// A poll can add messages while the reader is scrolled up reading history; only follow the tail
+	// when they are already at it.
+	useEffect(() => {
+		const list = messageListRef.current;
+		if (!list) return;
+		const distanceFromBottom = list.scrollHeight - list.scrollTop - list.clientHeight;
+		if (distanceFromBottom < 120) endRef.current?.scrollIntoView({ behavior: "smooth" });
 	}, [messages, drafts, conversationId]);
 
 	const draft = conversationId ? drafts[conversationId] : undefined;
+	const refundDraft = conversationId ? refundDrafts[conversationId] : undefined;
 	const activeTitle = conversations.find((item) => item.id === conversationId)?.title ?? "当前会话";
 
 	/**
@@ -133,9 +214,32 @@ export function App() {
 		}
 	}
 
+	/** The refund card follows the same rule: only a draft still awaiting confirmation is shown. */
+	async function restoreRefundDraft(
+		authToken: string,
+		target: string,
+		draftId: string | undefined,
+	): Promise<void> {
+		if (!draftId) return;
+		try {
+			const draft = await getRefundDraft(authToken, draftId);
+			if (draft.status !== "awaiting_confirmation") return;
+			setRefundDrafts((current) =>
+				current[target] ? current : { ...current, [target]: { id: draft.id, state: "pending" } },
+			);
+		} catch {
+			// Same reasoning as the order draft: hide the card rather than show a dead button.
+		}
+	}
+
 	function handleAgentPayload(assistantId: string, event: string, payload: AgentStreamPayload): void {
 		if (event === "error") {
 			setMessages((current) => [...current, statusMessage("本次处理失败，请稍后重试。")]);
+			return;
+		}
+		// A human owns this conversation now, so the turn has no model answer by design.
+		if (event === "handover") {
+			setUnderHumanTakeover(true);
 			return;
 		}
 		if (payload.type === "message_update" && payload.update?.type === "text_delta" && payload.update.delta) {
@@ -152,6 +256,12 @@ export function App() {
 			const draftId = payload.result?.details?.draftId;
 			if (typeof draftId === "string") {
 				setDrafts((current) => ({ ...current, [conversationId]: { id: draftId, state: "pending" } }));
+			}
+		}
+		if (payload.type === "tool_execution_end" && payload.toolName === "create_refund_draft") {
+			const draftId = payload.result?.details?.draftId;
+			if (typeof draftId === "string") {
+				setRefundDrafts((current) => ({ ...current, [conversationId]: { id: draftId, state: "pending" } }));
 			}
 		}
 	}
@@ -203,6 +313,7 @@ export function App() {
 				...current,
 			]);
 			setConversationId(id);
+			setUnderHumanTakeover(false);
 			setMessages([welcomeMessage()]);
 		} catch (error) {
 			setMessages((current) => [
@@ -218,8 +329,10 @@ export function App() {
 		try {
 			const history = await loadConversationMessages(token, id);
 			setConversationId(id);
+			setUnderHumanTakeover(history.underHumanTakeover);
 			setMessages(history.messages.length > 0 ? toChatMessages(history.messages) : [welcomeMessage()]);
 			await restoreDraft(token, id, history.orderDraftId);
+			await restoreRefundDraft(token, id, history.refundDraftId);
 		} catch (error) {
 			setConnectionState(error instanceof Error ? error.message : "加载会话失败");
 		} finally {
@@ -242,6 +355,42 @@ export function App() {
 				statusMessage(error instanceof Error ? error.message : "订单提交失败"),
 			]);
 		}
+	}
+
+	/**
+	 * Confirms the refund draft. This is the only place a refund request is created, and it needs
+	 * the customer's own token, so the agent cannot reach it.
+	 */
+	async function submitRefundDraft(): Promise<void> {
+		if (!refundDraft || !token || !conversationId || refundDraft.state !== "pending") return;
+		const target = conversationId;
+		setRefundDrafts((current) => ({ ...current, [target]: { ...refundDraft, state: "submitting" } }));
+		try {
+			const decision = await confirmRefundDraft(token, refundDraft.id);
+			if (decision.eligible) {
+				setRefundDrafts((current) => ({ ...current, [target]: { id: refundDraft.id, state: "submitted" } }));
+				setMessages((current) => [...current, statusMessage(`退款申请已提交：${decision.refundId}`)]);
+				return;
+			}
+			// The window closed between proposing and confirming, so the draft stays open with the
+			// server's own explanation rather than a message the browser invented.
+			setRefundDrafts((current) => ({
+				...current,
+				[target]: { id: refundDraft.id, state: "pending", blockedReason: decision.message ?? "当前订单已无法申请退款。" },
+			}));
+		} catch (error) {
+			setRefundDrafts((current) => ({ ...current, [target]: { ...refundDraft, state: "pending" } }));
+			setMessages((current) => [
+				...current,
+				statusMessage(error instanceof Error ? error.message : "退款申请提交失败"),
+			]);
+		}
+	}
+
+	function messageAuthor(message: ChatMessage): string {
+		if (message.role === "user") return "你";
+		if (message.role === "agent") return message.author ? `人工客服 ${message.author}` : "人工客服";
+		return "客服 Agent";
 	}
 
 	return (
@@ -300,15 +449,25 @@ export function App() {
 						<div>
 							<h2 id="chat-heading">{activeTitle}</h2>
 							<p>所有工具操作均记录审计日志</p>
+							{underHumanTakeover && (
+								<p className="takeover-banner" role="status">
+									人工客服已接入，会在这个会话里回复你。
+								</p>
+							)}
 						</div>
 						<span>{conversationId ? conversationId.slice(0, 8) : "等待会话"}</span>
 					</div>
 
-					<div className="messages" aria-live="polite" aria-busy={busy || loadingHistory}>
+					<div
+						className="messages"
+						ref={messageListRef}
+						aria-live="polite"
+						aria-busy={busy || loadingHistory}
+					>
 						{loadingHistory && <p className="history-loading">正在加载会话…</p>}
 						{messages.map((message) => (
 							<div className={`message message--${message.role}`} key={message.id}>
-								{message.role !== "status" && <strong>{message.role === "user" ? "你" : "客服 Agent"}</strong>}
+								{message.role !== "status" && <strong>{messageAuthor(message)}</strong>}
 								<p>{toPlainText(message.content) || (busy ? "正在思考…" : "")}</p>
 							</div>
 						))}
@@ -326,6 +485,30 @@ export function App() {
 								{draft.state !== "submitted" && (
 									<button type="button" disabled={draft.state === "submitting"} onClick={() => void submitDraft()}>
 										{draft.state === "submitting" ? "正在重新校验库存…" : "确认并提交订单"}
+									</button>
+								)}
+							</section>
+						)}
+						{refundDraft && (
+							<section className="order-card" aria-label="待确认退款申请">
+								<p className="eyebrow">REFUND CHECKPOINT</p>
+								<h3>
+									{refundDraft.state === "submitted"
+										? "退款申请已提交"
+										: refundDraft.blockedReason
+											? "退款申请无法提交"
+											: "退款申请等待确认"}
+								</h3>
+								<p className="order-card-hint">
+									{refundDraft.state === "submitted"
+										? "申请已进入待处理，可在对话中让客服查询进度。"
+										: (refundDraft.blockedReason ??
+											"点击下面的按钮才会正式提交退款申请；不点击就不会有任何申请产生。")}
+								</p>
+								<p className="mono">{refundDraft.id}</p>
+								{refundDraft.state === "pending" && !refundDraft.blockedReason && (
+									<button type="button" onClick={() => void submitRefundDraft()}>
+										确认并提交退款申请
 									</button>
 								)}
 							</section>

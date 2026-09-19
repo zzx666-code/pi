@@ -1,10 +1,14 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { readHumanAgentMessage } from "./human-agent-message.ts";
 
 /** Minimal message shape rendered by the web client. */
 export interface ConversationDisplayMessage {
 	id: string;
-	role: "user" | "assistant";
+	/** `agent` is a human support reply, rendered differently from the model's own answers. */
+	role: "user" | "assistant" | "agent";
 	content: string;
+	/** Support agent who wrote it. Only set for `agent` messages. */
+	author?: string;
 }
 
 /** Transcript payload returned when a client opens a conversation. */
@@ -12,6 +16,22 @@ export interface ConversationHistory {
 	messages: ConversationDisplayMessage[];
 	/** Order draft awaiting confirmation at the end of the transcript, if any. */
 	orderDraftId?: string;
+	/** Refund draft awaiting the customer's confirmation, if any. */
+	refundDraftId?: string;
+	/**
+	 * True while a claimed ticket points at this conversation.
+	 *
+	 * The browser has no push channel, so it polls this payload. Without the flag a customer would
+	 * have to reload to learn that a human showed up.
+	 */
+	underHumanTakeover: boolean;
+}
+
+/** Transcript the desk reads through a ticket. Separate from {@link ConversationHistory}: no draft. */
+export interface SupportTicketConversation {
+	/** Null for tickets created before the conversation link existed. */
+	conversationId: string | null;
+	messages: ConversationDisplayMessage[];
 }
 
 const TITLE_MAX_LENGTH = 40;
@@ -72,6 +92,16 @@ export function conversationTitleFromMessages(messages: AgentMessage[]): string 
 export function toDisplayMessages(messages: AgentMessage[]): ConversationDisplayMessage[] {
 	const output: ConversationDisplayMessage[] = [];
 	messages.forEach((message, index) => {
+		const deskReply = readHumanAgentMessage(message);
+		if (deskReply) {
+			output.push({
+				id: `history-${index}`,
+				role: "agent",
+				content: deskReply.text,
+				author: deskReply.author,
+			});
+			return;
+		}
 		if (message.role !== "user" && message.role !== "assistant") return;
 		const content = messageText(message);
 		if (!content) return;
@@ -81,16 +111,25 @@ export function toDisplayMessages(messages: AgentMessage[]): ConversationDisplay
 }
 
 /**
- * Recover the draft awaiting confirmation.
+ * Recover the drafts awaiting confirmation.
  *
  * The browser keeps draft confirmation state in memory only, so reloading the page loses the
- * confirm button while the draft stays open in the database. The id is already recorded in the
- * tool result stored in the transcript, so no schema change is needed to restore it.
+ * confirm buttons while the drafts stay open in the database. The ids are already recorded in the
+ * tool results stored in the transcript, so no schema change is needed to restore them.
  */
 export function latestOrderDraftId(messages: AgentMessage[]): string | undefined {
+	return latestToolDraftId(messages, "create_order_draft");
+}
+
+/** Same recovery trick for the refund gate: the draft id rides along in the tool result. */
+export function latestRefundDraftId(messages: AgentMessage[]): string | undefined {
+	return latestToolDraftId(messages, "create_refund_draft");
+}
+
+function latestToolDraftId(messages: AgentMessage[], toolName: string): string | undefined {
 	for (let index = messages.length - 1; index >= 0; index -= 1) {
 		const message = messages[index];
-		if (message?.role !== "toolResult" || message.toolName !== "create_order_draft") continue;
+		if (message?.role !== "toolResult" || message.toolName !== toolName) continue;
 		const text = contentText(message.content);
 		if (!text) continue;
 		try {

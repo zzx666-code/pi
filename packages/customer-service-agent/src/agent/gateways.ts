@@ -1,9 +1,14 @@
 import type {
+	CancelRefundResult,
 	DraftItemInput,
 	OrderListEntry,
 	RefundDecision,
+	RefundDraft,
 	RefundListOptions,
+	RefundProposal,
 	RefundRequest,
+	SupportTicket,
+	SupportTicketListOptions,
 } from "../domain/types.ts";
 
 export interface ProductSummary {
@@ -39,12 +44,27 @@ export interface CommerceGateway {
 	listOrders(userId: string, limit?: number): Promise<OrderListEntry[]>;
 	getOrderDraft(userId: string, draftId: string): Promise<DraftSummary>;
 	createOrderDraft(userId: string, region: string, items: DraftItemInput[]): Promise<DraftSummary>;
-	createSupportTicket(userId: string, summary: string): Promise<{ id: string; status: "open" }>;
+	/** Opens a handoff. `conversationId` ties the ticket to the transcript the desk must answer into. */
+	createSupportTicket(userId: string, summary: string, conversationId: string | null): Promise<SupportTicket>;
+	/**
+	 * Desk operations. They carry no user identity: the desk works across customers, and none of
+	 * them is exposed as an agent tool, so the model can open a ticket but never work one.
+	 */
+	getSupportTicket(ticketId: string): Promise<SupportTicket>;
+	listSupportTickets(options?: SupportTicketListOptions): Promise<SupportTicket[]>;
+	claimSupportTicket(ticketId: string, assignee: string): Promise<SupportTicket>;
+	closeSupportTicket(ticketId: string, note: string | null): Promise<SupportTicket>;
 	/**
 	 * Records a refund request for human review.
 	 * The commerce service decides the refund window, so the model never judges eligibility.
 	 */
-	requestRefund(userId: string, orderId: string, reason?: string): Promise<RefundDecision>;
+	/**
+	 * Writes a refund draft. Deliberately not a submission: the model must not be able to open a
+	 * live refund request on its own, so the gateway exposes the proposal and nothing further.
+	 */
+	proposeRefund(userId: string, orderId: string, reason?: string): Promise<RefundProposal>;
+	/** Withdraws the customer's own request, releasing the order for a fresh one. */
+	cancelRefundRequest(userId: string, orderId: string): Promise<CancelRefundResult>;
 	/** Refund requests of the current user, newest first. */
 	listRefundRequests(userId: string, options?: RefundListOptions): Promise<RefundRequest[]>;
 }
@@ -52,6 +72,18 @@ export interface CommerceGateway {
 export interface OrderConfirmationGateway {
 	confirmOrderDraft(userId: string, draftId: string): Promise<DraftSummary>;
 	submitOrderDraft(userId: string, draftId: string, idempotencyKey: string): Promise<OrderSummary>;
+}
+
+/**
+ * The customer-facing half of the refund gate.
+ *
+ * It lives beside {@link OrderConfirmationGateway} rather than on {@link CommerceGateway} on
+ * purpose: only the web client calls it, with the customer's own JWT, so the model has no path to
+ * a refund request that the customer did not confirm.
+ */
+export interface RefundConfirmationGateway {
+	confirmRefundDraft(userId: string, draftId: string): Promise<RefundDecision>;
+	loadRefundDraft(userId: string, draftId: string): Promise<RefundDraft>;
 }
 
 export interface KnowledgeSearchResult {
@@ -82,7 +114,7 @@ export class CommerceHttpError extends Error {
 	}
 }
 
-export class CommerceHttpGateway implements CommerceGateway, OrderConfirmationGateway {
+export class CommerceHttpGateway implements CommerceGateway, OrderConfirmationGateway, RefundConfirmationGateway {
 	private readonly baseUrl: string;
 	private readonly internalToken: string;
 
@@ -136,19 +168,63 @@ export class CommerceHttpGateway implements CommerceGateway, OrderConfirmationGa
 		});
 	}
 
-	async createSupportTicket(userId: string, summary: string): Promise<{ id: string; status: "open" }> {
-		return await this.request<{ id: string; status: "open" }>("/support-tickets", {
+	async createSupportTicket(userId: string, summary: string, conversationId: string | null): Promise<SupportTicket> {
+		return await this.request<SupportTicket>("/support-tickets", {
 			method: "POST",
 			userId,
-			body: { summary },
+			body: { summary, conversationId },
 		});
 	}
 
-	async requestRefund(userId: string, orderId: string, reason?: string): Promise<RefundDecision> {
-		return await this.request<RefundDecision>("/refund-requests", {
+	async getSupportTicket(ticketId: string): Promise<SupportTicket> {
+		return await this.request<SupportTicket>(`/support-tickets/${encodeURIComponent(ticketId)}`);
+	}
+
+	async listSupportTickets(options: SupportTicketListOptions = {}): Promise<SupportTicket[]> {
+		const params = new URLSearchParams({ limit: String(options.limit ?? 20) });
+		if (options.status) params.set("status", options.status);
+		if (options.conversationId) params.set("conversationId", options.conversationId);
+		return await this.request<SupportTicket[]>(`/support-tickets?${params.toString()}`);
+	}
+
+	async claimSupportTicket(ticketId: string, assignee: string): Promise<SupportTicket> {
+		return await this.request<SupportTicket>(`/support-tickets/${encodeURIComponent(ticketId)}/claim`, {
+			method: "POST",
+			body: { assignee },
+		});
+	}
+
+	async closeSupportTicket(ticketId: string, note: string | null): Promise<SupportTicket> {
+		return await this.request<SupportTicket>(`/support-tickets/${encodeURIComponent(ticketId)}/close`, {
+			method: "POST",
+			body: { note },
+		});
+	}
+
+	async proposeRefund(userId: string, orderId: string, reason?: string): Promise<RefundProposal> {
+		return await this.request<RefundProposal>("/refund-drafts", {
 			method: "POST",
 			userId,
 			body: { orderId, reason },
+		});
+	}
+
+	async confirmRefundDraft(userId: string, draftId: string): Promise<RefundDecision> {
+		return await this.request<RefundDecision>(`/refund-drafts/${encodeURIComponent(draftId)}/confirm`, {
+			method: "POST",
+			userId,
+		});
+	}
+
+	async loadRefundDraft(userId: string, draftId: string): Promise<RefundDraft> {
+		return await this.request<RefundDraft>(`/refund-drafts/${encodeURIComponent(draftId)}`, { userId });
+	}
+
+	async cancelRefundRequest(userId: string, orderId: string): Promise<CancelRefundResult> {
+		return await this.request<CancelRefundResult>("/refund-requests/cancel", {
+			method: "POST",
+			userId,
+			body: { orderId },
 		});
 	}
 

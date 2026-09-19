@@ -4,10 +4,12 @@ import { ACTIVE_REFUND_STATUSES, TERMINAL_REFUND_STATUSES } from "../../src/doma
 import type {
 	CommerceRepository,
 	CreateDraftRecord,
+	CreateRefundDraftRecord,
 	CreateRefundRequestRecord,
 	Order,
 	OrderDraft,
 	Product,
+	RefundDraft,
 	RefundListOptions,
 	RefundRequest,
 	SubmitDraftInput,
@@ -23,6 +25,7 @@ class FakeCommerceRepository implements CommerceRepository {
 	readonly ordersByIdempotencyKey = new Map<string, Order>();
 	readonly ordersById = new Map<string, Order>();
 	readonly refundRequests: RefundRequest[] = [];
+	readonly refundDrafts = new Map<string, RefundDraft>();
 
 	async findProductBySku(sku: string): Promise<Product | undefined> {
 		return this.products.get(sku);
@@ -93,6 +96,35 @@ class FakeCommerceRepository implements CommerceRepository {
 		};
 		this.refundRequests.push(request);
 		return request;
+	}
+
+	async createRefundDraft(record: CreateRefundDraftRecord): Promise<RefundDraft> {
+		const draft: RefundDraft = {
+			id: `refund-draft-${this.refundDrafts.size + 1}`,
+			...record,
+			status: "awaiting_confirmation",
+			createdAt: REQUESTED_AT,
+		};
+		this.refundDrafts.set(draft.id, draft);
+		return draft;
+	}
+
+	async getRefundDraft(id: string): Promise<RefundDraft | undefined> {
+		return this.refundDrafts.get(id);
+	}
+
+	async findAwaitingRefundDraft(orderId: string): Promise<RefundDraft | undefined> {
+		return [...this.refundDrafts.values()].find(
+			(candidate) => candidate.orderId === orderId && candidate.status === "awaiting_confirmation",
+		);
+	}
+
+	async markRefundDraftSubmitted(id: string): Promise<RefundDraft | undefined> {
+		const draft = this.refundDrafts.get(id);
+		if (!draft || draft.status !== "awaiting_confirmation") return undefined;
+		const submitted: RefundDraft = { ...draft, status: "submitted" };
+		this.refundDrafts.set(id, submitted);
+		return submitted;
 	}
 
 	async updateRefundStatus(record: UpdateRefundStatusRecord): Promise<RefundRequest | undefined> {
@@ -407,5 +439,207 @@ describe("OrderService refund lifecycle", () => {
 		await expect(service.listRefundRequests("user-1", { orderId: "order-404" })).rejects.toMatchObject({
 			code: "NOT_FOUND",
 		});
+	});
+});
+
+describe("OrderService refund gate", () => {
+	// The whole point of the gate: proposing must not create a request, or a customer who merely
+	// asked "can I return this?" ends up with a live application they never agreed to.
+	it("writes a draft and no request when the model proposes a refund", async () => {
+		const repository = new FakeCommerceRepository();
+		seedOrder(repository);
+
+		const proposal = await createRefundService(repository).proposeRefund("user-1", "order-1", "耳机太丑");
+
+		expect(proposal).toMatchObject({
+			eligible: true,
+			draftId: "refund-draft-1",
+			requiresConfirmation: true,
+			amountCents: 39900,
+			windowDays: 7,
+		});
+		expect(repository.refundDrafts.size).toBe(1);
+		expect(repository.refundRequests).toHaveLength(0);
+		expect(await repository.findActiveRefundRequest("order-1")).toBeUndefined();
+	});
+
+	it("creates the request only once the customer confirms", async () => {
+		const repository = new FakeCommerceRepository();
+		seedOrder(repository);
+		const service = createRefundService(repository);
+		const proposal = await service.proposeRefund("user-1", "order-1", "耳机太丑");
+		if (!proposal.eligible) throw new Error("expected an eligible proposal");
+
+		const decision = await service.confirmRefundDraft("user-1", proposal.draftId);
+
+		expect(decision).toMatchObject({ eligible: true, refundId: "refund-1", status: "pending_review" });
+		expect(repository.refundRequests).toHaveLength(1);
+		expect(repository.refundDrafts.get(proposal.draftId)?.status).toBe("submitted");
+	});
+
+	it("reuses the draft the model already opened instead of piling up new ones", async () => {
+		const repository = new FakeCommerceRepository();
+		seedOrder(repository);
+		const service = createRefundService(repository);
+
+		const first = await service.proposeRefund("user-1", "order-1", "耳机太丑");
+		const second = await service.proposeRefund("user-1", "order-1", "耳机太丑");
+
+		expect(second).toMatchObject({ draftId: first.eligible ? first.draftId : "unreachable" });
+		expect(repository.refundDrafts.size).toBe(1);
+	});
+
+	// Days can pass between proposing and confirming, so the window is re-checked rather than
+	// trusted from the draft.
+	it("refuses to confirm a draft whose window has closed", async () => {
+		const repository = new FakeCommerceRepository();
+		seedOrder(repository);
+		const service = createRefundService(repository);
+		// Opened while the order still qualified, then the order was re-dated to a stale one, which
+		// is what a week passing between proposing and confirming looks like to the service.
+		const proposal = await service.proposeRefund("user-1", "order-1");
+		if (!proposal.eligible) throw new Error("expected an eligible proposal");
+		repository.ordersById.set("order-1", { ...seedOrder(repository), createdAt: "2026-08-01T00:00:00.000Z" });
+
+		const decision = await service.confirmRefundDraft("user-1", proposal.draftId);
+
+		expect(decision).toMatchObject({ eligible: false, code: "REFUND_WINDOW_EXPIRED" });
+		expect(repository.refundRequests).toHaveLength(0);
+	});
+
+	it("hides another user's draft", async () => {
+		const repository = new FakeCommerceRepository();
+		seedOrder(repository);
+		const service = createRefundService(repository);
+		const proposal = await service.proposeRefund("user-1", "order-1");
+		if (!proposal.eligible) throw new Error("expected an eligible proposal");
+
+		await expect(service.confirmRefundDraft("user-2", proposal.draftId)).rejects.toMatchObject({
+			code: "FORBIDDEN",
+		});
+		expect(repository.refundRequests).toHaveLength(0);
+	});
+
+	// A double tap, or a reload followed by another tap, must not open two requests.
+	it("replays the request when the same draft is confirmed twice", async () => {
+		const repository = new FakeCommerceRepository();
+		seedOrder(repository);
+		const service = createRefundService(repository);
+		const proposal = await service.proposeRefund("user-1", "order-1");
+		if (!proposal.eligible) throw new Error("expected an eligible proposal");
+
+		const first = await service.confirmRefundDraft("user-1", proposal.draftId);
+		const second = await service.confirmRefundDraft("user-1", proposal.draftId);
+
+		expect(first).toMatchObject({ eligible: true });
+		expect(second).toMatchObject({ eligible: true });
+		expect(repository.refundRequests).toHaveLength(1);
+	});
+
+	it("reports an ineligible window without writing a draft", async () => {
+		const repository = new FakeCommerceRepository();
+		seedOrder(repository, { createdAt: "2026-08-01T00:00:00.000Z" });
+
+		const proposal = await createRefundService(repository).proposeRefund("user-1", "order-1");
+
+		expect(proposal).toMatchObject({ eligible: false, code: "REFUND_WINDOW_EXPIRED" });
+		expect(repository.refundDrafts.size).toBe(0);
+	});
+});
+
+describe("OrderService refund cancellation", () => {
+	it("cancels a request that is still waiting for review", async () => {
+		const repository = new FakeCommerceRepository();
+		seedOrder(repository);
+		seedRefund(repository);
+		const service = createRefundService(repository);
+
+		const result = await service.cancelRefundRequest("user-1", "order-1");
+
+		expect(result).toMatchObject({
+			cancelled: true,
+			orderId: "order-1",
+			refundId: "refund-1",
+			status: "cancelled",
+			statusLabel: "已撤销",
+		});
+		expect(repository.refundRequests[0]?.status).toBe("cancelled");
+		expect(repository.refundRequests[0]?.lastTransitionBy).toBe("user-1");
+	});
+
+	it("cancels a request the desk had already taken over", async () => {
+		const repository = new FakeCommerceRepository();
+		seedOrder(repository);
+		seedRefund(repository, { status: "handed_off" });
+
+		const result = await createRefundService(repository).cancelRefundRequest("user-1", "order-1");
+
+		expect(result).toMatchObject({ cancelled: true, status: "cancelled" });
+	});
+
+	// Once the request is approved the money is already moving, so the customer cannot recall it.
+	it("refuses to cancel an approved request", async () => {
+		const repository = new FakeCommerceRepository();
+		seedOrder(repository);
+		seedRefund(repository, { status: "approved" });
+
+		const result = await createRefundService(repository).cancelRefundRequest("user-1", "order-1");
+
+		expect(result).toMatchObject({
+			cancelled: false,
+			code: "REFUND_NOT_CANCELLABLE",
+			status: "approved",
+			statusLabel: "已通过审核，等待退款执行",
+		});
+		expect(repository.refundRequests[0]?.status).toBe("approved");
+	});
+
+	it("reports nothing to cancel once the request is terminal", async () => {
+		for (const status of TERMINAL_REFUND_STATUSES) {
+			const repository = new FakeCommerceRepository();
+			seedOrder(repository);
+			seedRefund(repository, { status });
+
+			const result = await createRefundService(repository).cancelRefundRequest("user-1", "order-1");
+
+			expect(result).toMatchObject({ cancelled: false, code: "NO_ACTIVE_REQUEST" });
+			expect(repository.refundRequests[0]?.status).toBe(status);
+		}
+	});
+
+	// Why the feature exists: an unwanted request used to hold the order until a human rejected it,
+	// because the unique index allows only one active request per order.
+	it("frees the order so the customer can submit a different request", async () => {
+		const repository = new FakeCommerceRepository();
+		seedOrder(repository);
+		seedRefund(repository, { reason: "耳机太丑" });
+		const service = createRefundService(repository);
+		await service.cancelRefundRequest("user-1", "order-1");
+
+		const decision = await service.requestRefund("user-1", "order-1", "按键失灵");
+
+		expect(decision).toMatchObject({ eligible: true });
+		expect(await repository.findActiveRefundRequest("order-1")).toMatchObject({ reason: "按键失灵" });
+		expect(repository.refundRequests).toHaveLength(2);
+	});
+
+	it("hides another user's order", async () => {
+		const repository = new FakeCommerceRepository();
+		seedOrder(repository);
+		seedRefund(repository);
+
+		await expect(createRefundService(repository).cancelRefundRequest("user-2", "order-1")).rejects.toMatchObject({
+			code: "NOT_FOUND",
+		});
+		expect(repository.refundRequests[0]?.status).toBe("pending_review");
+	});
+
+	it("reports that there is nothing to cancel when no request was ever made", async () => {
+		const repository = new FakeCommerceRepository();
+		seedOrder(repository);
+
+		const result = await createRefundService(repository).cancelRefundRequest("user-1", "order-1");
+
+		expect(result).toMatchObject({ cancelled: false, orderId: "order-1", code: "NO_ACTIVE_REQUEST" });
 	});
 });

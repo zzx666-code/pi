@@ -3,6 +3,8 @@ export interface AppConfig {
 	commercePort: number;
 	commerceBaseUrl: string;
 	commerceInternalToken: string;
+	/** Token the support desk presents to the agent. Defaults to the internal token: same system, one secret. */
+	deskToken: string;
 	mysqlUrl: string;
 	llmProvider: string;
 	llmBaseUrl: string;
@@ -22,11 +24,13 @@ function numberFromEnv(name: string, fallback: number): number {
 
 export function loadConfig(): AppConfig {
 	const commercePort = numberFromEnv("COMMERCE_PORT", 3101);
+	const commerceInternalToken = process.env.COMMERCE_INTERNAL_TOKEN ?? "change-me-for-production";
 	return {
 		agentPort: numberFromEnv("AGENT_PORT", 3100),
 		commercePort,
 		commerceBaseUrl: process.env.COMMERCE_BASE_URL ?? `http://127.0.0.1:${commercePort}`,
-		commerceInternalToken: process.env.COMMERCE_INTERNAL_TOKEN ?? "change-me-for-production",
+		commerceInternalToken,
+		deskToken: process.env.DESK_TOKEN ?? commerceInternalToken,
 		mysqlUrl: process.env.MYSQL_URL ?? "mysql://pi:pi@127.0.0.1:3307/pi_customer_service",
 		llmProvider: process.env.LLM_PROVIDER ?? "zhipu",
 		llmBaseUrl: process.env.LLM_BASE_URL ?? "https://open.bigmodel.cn/api/paas/v4",

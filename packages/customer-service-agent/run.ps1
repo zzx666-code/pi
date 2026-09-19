@@ -5,7 +5,7 @@
 .DESCRIPTION
     Brings up MySQL in Docker, waits for it to become healthy, applies the database
     migration, ingests the knowledge base, then starts the Commerce API, Agent API and
-    web client in their own windows.
+    customer web client and the desk client in their own windows.
 
     Model credentials are read from the pi coding agent's models.json
     (~/.pi/agent/models.json), so LLM_API_KEY is only needed when that file is absent.
@@ -57,7 +57,8 @@ $modelsJson = Join-Path $HOME ".pi/agent/models.json"
 $services = @(
     [pscustomobject]@{ Name = "Commerce API"; NpmScript = "dev:commerce"; Port = 3101 },
     [pscustomobject]@{ Name = "Agent API";    NpmScript = "dev:agent";    Port = 3100 },
-    [pscustomobject]@{ Name = "Web client";   NpmScript = "dev:web";      Port = 5173 }
+    [pscustomobject]@{ Name = "Web client";   NpmScript = "dev:web";      Port = 5173 },
+    [pscustomobject]@{ Name = "Desk client";  NpmScript = "dev:desk";     Port = 5134 }
 )
 
 function Write-Step {
@@ -196,16 +197,19 @@ Write-Step "Waiting for services to answer"
 $commerceReady = Wait-ForHttp -Url "http://127.0.0.1:3101/health"
 $agentReady = Wait-ForHttp -Url "http://127.0.0.1:3100/health"
 $webReady = Wait-ForHttp -Url "http://127.0.0.1:5173/" -TimeoutSeconds 40
+$deskReady = Wait-ForHttp -Url "http://127.0.0.1:5134/" -TimeoutSeconds 40
 
 if (-not $commerceReady) { Write-Notice "Commerce API did not answer on 3101" }
 if (-not $agentReady) { Write-Notice "Agent API did not answer on 3100 (check its window for the reason)" }
 if (-not $webReady) { Write-Notice "Web client did not answer on 5173" }
+if (-not $deskReady) { Write-Notice "Desk client did not answer on 5134" }
 
 Write-Host ""
 Write-Host "==================================================" -ForegroundColor Green
 Write-Host "  Customer service demo is running" -ForegroundColor Green
 Write-Host "==================================================" -ForegroundColor Green
-Write-Host "  Web client      http://127.0.0.1:5173"
+Write-Host "  Web client      http://127.0.0.1:5173   (customer)"
+Write-Host "  Desk client     http://127.0.0.1:5134   (operator)"
 Write-Host "  Agent API       http://127.0.0.1:3100/health"
 Write-Host "  Commerce API    http://127.0.0.1:3101/health"
 Write-Host "  MySQL           127.0.0.1:3307   (user pi / password pi)"

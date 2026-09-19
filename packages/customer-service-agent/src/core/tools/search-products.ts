@@ -1,7 +1,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import type { CommerceGateway } from "../../agent/gateways.ts";
-import { textResult } from "./shared.ts";
+import { textResult, withRecoveryHint } from "./shared.ts";
 
 const searchProductsSchema = Type.Object({ query: Type.String({ minLength: 1 }) });
 
@@ -15,7 +15,7 @@ export function createSearchProductsTool(
 		parameters: searchProductsSchema,
 		replay: "safe",
 		async execute(_toolCallId, params) {
-			const products = await commerce.searchProducts(params.query);
+			const products = await withRecoveryHint(() => commerce.searchProducts(params.query));
 			return textResult(JSON.stringify(products), { count: products.length });
 		},
 	};

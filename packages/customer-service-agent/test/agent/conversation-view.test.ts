@@ -7,6 +7,7 @@ import {
 	toConversationTitle,
 	toDisplayMessages,
 } from "../../src/agent/conversation-view.ts";
+import { createHumanAgentMessage } from "../../src/agent/human-agent-message.ts";
 
 function toolResult(toolName: string, payload: unknown, timestamp: number): AgentMessage {
 	return {
@@ -96,5 +97,24 @@ describe("conversation view", () => {
 		];
 
 		expect(latestOrderDraftId(messages)).toBe("draft-2");
+	});
+
+	// The customer has to be able to tell a desk reply from a model reply, so the display layer
+	// carries the author separately instead of flattening it into the text.
+	it("renders a desk reply as an agent turn with its author", () => {
+		const messages: AgentMessage[] = [
+			{ role: "user", content: "我要投诉", timestamp: 1 },
+			createHumanAgentMessage({
+				author: "客服小李",
+				text: "您好，我来处理",
+				ticketId: "ticket-1",
+				timestamp: 2,
+			}),
+		];
+
+		expect(toDisplayMessages(messages)).toEqual([
+			{ id: "history-0", role: "user", content: "我要投诉" },
+			{ id: "history-1", role: "agent", content: "您好，我来处理", author: "客服小李" },
+		]);
 	});
 });

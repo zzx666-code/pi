@@ -4,14 +4,18 @@ import { ACTIVE_REFUND_STATUSES } from "../domain/refund-status.ts";
 import type {
 	CommerceStore,
 	CreateDraftRecord,
+	CreateRefundDraftRecord,
 	CreateRefundRequestRecord,
 	Order,
 	OrderDraft,
 	OrderListEntry,
 	Product,
+	RefundDraft,
 	RefundListOptions,
 	RefundRequest,
 	SubmitDraftInput,
+	SupportTicket,
+	SupportTicketListOptions,
 	UpdateRefundStatusRecord,
 } from "../domain/types.ts";
 
@@ -35,6 +39,8 @@ export class InMemoryCommerceRepository implements CommerceStore {
 	private readonly ordersById = new Map<string, Order>();
 	private readonly ordersByIdempotencyKey = new Map<string, Order>();
 	private readonly refundRequests: RefundRequest[] = [];
+	private readonly refundDrafts = new Map<string, RefundDraft>();
+	private readonly supportTickets = new Map<string, SupportTicket>();
 	private readonly now: () => Date;
 
 	constructor(options: InMemoryCommerceOptions) {
@@ -140,8 +146,85 @@ export class InMemoryCommerceRepository implements CommerceStore {
 		return structuredClone(order);
 	}
 
-	async createSupportTicket(_userId: string, _summary: string): Promise<{ id: string; status: "open" }> {
-		return { id: randomUUID(), status: "open" };
+	/**
+	 * Opens a handoff, or returns the one this conversation already has.
+	 *
+	 * Mirrors the unique index on `active_conversation_id` in the MySQL repository: a conversation
+	 * holds at most one ticket that is not closed, so repeating a handoff cannot put the same
+	 * customer into the desk queue twice. Closing frees the slot for a genuinely new escalation.
+	 */
+	async createSupportTicket(userId: string, summary: string, conversationId: string | null): Promise<SupportTicket> {
+		if (conversationId) {
+			const existing = this.activeTicketFor(conversationId);
+			if (existing) return structuredClone(existing);
+		}
+		const now = this.now().toISOString();
+		const ticket: SupportTicket = {
+			id: randomUUID(),
+			userId,
+			conversationId,
+			summary,
+			status: "open",
+			assignee: null,
+			claimedAt: null,
+			closedAt: null,
+			closeNote: null,
+			createdAt: now,
+			updatedAt: now,
+		};
+		this.supportTickets.set(ticket.id, ticket);
+		return structuredClone(ticket);
+	}
+
+	private activeTicketFor(conversationId: string): SupportTicket | undefined {
+		return [...this.supportTickets.values()].find(
+			(ticket) => ticket.conversationId === conversationId && ticket.status !== "closed",
+		);
+	}
+
+	async getSupportTicket(id: string): Promise<SupportTicket | undefined> {
+		const ticket = this.supportTickets.get(id);
+		return ticket ? structuredClone(ticket) : undefined;
+	}
+
+	async listSupportTickets(options: SupportTicketListOptions = {}): Promise<SupportTicket[]> {
+		const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
+		return [...this.supportTickets.values()]
+			.filter((ticket) => (options.status ? ticket.status === options.status : true))
+			.filter((ticket) => (options.conversationId ? ticket.conversationId === options.conversationId : true))
+			.reverse()
+			.slice(0, limit)
+			.map((ticket) => structuredClone(ticket));
+	}
+
+	async claimSupportTicket(ticketId: string, assignee: string): Promise<SupportTicket | undefined> {
+		const ticket = this.supportTickets.get(ticketId);
+		if (!ticket || ticket.status !== "open") return undefined;
+		const now = this.now().toISOString();
+		const claimed: SupportTicket = {
+			...ticket,
+			status: "assigned",
+			assignee,
+			claimedAt: now,
+			updatedAt: now,
+		};
+		this.supportTickets.set(ticketId, claimed);
+		return structuredClone(claimed);
+	}
+
+	async closeSupportTicket(ticketId: string, note: string | null): Promise<SupportTicket | undefined> {
+		const ticket = this.supportTickets.get(ticketId);
+		if (!ticket || ticket.status !== "assigned") return undefined;
+		const now = this.now().toISOString();
+		const closed: SupportTicket = {
+			...ticket,
+			status: "closed",
+			closedAt: now,
+			closeNote: note,
+			updatedAt: now,
+		};
+		this.supportTickets.set(ticketId, closed);
+		return structuredClone(closed);
 	}
 
 	async findActiveRefundRequest(orderId: string): Promise<RefundRequest | undefined> {
@@ -181,6 +264,38 @@ export class InMemoryCommerceRepository implements CommerceStore {
 		};
 		this.refundRequests.push(request);
 		return structuredClone(request);
+	}
+
+	async createRefundDraft(record: CreateRefundDraftRecord): Promise<RefundDraft> {
+		const now = this.now().toISOString();
+		const draft: RefundDraft = {
+			id: randomUUID(),
+			...record,
+			status: "awaiting_confirmation",
+			createdAt: now,
+		};
+		this.refundDrafts.set(draft.id, draft);
+		return structuredClone(draft);
+	}
+
+	async getRefundDraft(id: string): Promise<RefundDraft | undefined> {
+		const draft = this.refundDrafts.get(id);
+		return draft ? structuredClone(draft) : undefined;
+	}
+
+	async findAwaitingRefundDraft(orderId: string): Promise<RefundDraft | undefined> {
+		const draft = [...this.refundDrafts.values()].find(
+			(candidate) => candidate.orderId === orderId && candidate.status === "awaiting_confirmation",
+		);
+		return draft ? structuredClone(draft) : undefined;
+	}
+
+	async markRefundDraftSubmitted(id: string): Promise<RefundDraft | undefined> {
+		const draft = this.refundDrafts.get(id);
+		if (!draft || draft.status !== "awaiting_confirmation") return undefined;
+		const submitted: RefundDraft = { ...draft, status: "submitted" };
+		this.refundDrafts.set(id, submitted);
+		return structuredClone(submitted);
 	}
 
 	async updateRefundStatus(record: UpdateRefundStatusRecord): Promise<RefundRequest | undefined> {

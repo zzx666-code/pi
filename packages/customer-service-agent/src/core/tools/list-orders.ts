@@ -1,7 +1,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import type { CommerceGateway } from "../../agent/gateways.ts";
-import { type ToolRequestContext, textResult, toBeijingTime } from "./shared.ts";
+import { type ToolRequestContext, textResult, toBeijingTime, withRecoveryHint } from "./shared.ts";
 
 const listOrdersSchema = Type.Object({
 	limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20, description: "最多返回的订单数量，默认 5。" })),
@@ -19,7 +19,7 @@ export function createListOrdersTool(
 		parameters: listOrdersSchema,
 		replay: "safe",
 		async execute(_toolCallId, params) {
-			const orders = await commerce.listOrders(context.userId, params.limit ?? 5);
+			const orders = await withRecoveryHint(() => commerce.listOrders(context.userId, params.limit ?? 5));
 			const localised = orders.map((order) => ({ ...order, createdAt: toBeijingTime(order.createdAt) }));
 			return textResult(JSON.stringify(localised), { count: orders.length });
 		},

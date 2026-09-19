@@ -34,6 +34,13 @@ export interface ConversationStore {
 	list(userId: string): Promise<ConversationSummary[]>;
 	load(conversationId: string, userId: string): Promise<AgentMessage[]>;
 	replace(conversationId: string, userId: string, messages: AgentMessage[]): Promise<void>;
+	/**
+	 * Adds messages to the end of the transcript.
+	 *
+	 * Unlike {@link replace} it never deletes existing rows, so a desk reply that lands while the
+	 * model is still thinking survives the turn instead of being overwritten.
+	 */
+	append(conversationId: string, userId: string, messages: AgentMessage[]): Promise<void>;
 	recordToolAudit(record: ToolAuditRecord): Promise<void>;
 }
 
@@ -75,6 +82,13 @@ export class InMemoryConversationStore implements ConversationStore {
 	async replace(conversationId: string, userId: string, messages: AgentMessage[]): Promise<void> {
 		const conversation = this.requireOwned(conversationId, userId);
 		conversation.messages = structuredClone(messages);
+		conversation.updatedAt = Date.now();
+		conversation.sequence = ++this.sequence;
+	}
+
+	async append(conversationId: string, userId: string, messages: AgentMessage[]): Promise<void> {
+		const conversation = this.requireOwned(conversationId, userId);
+		conversation.messages.push(...structuredClone(messages));
 		conversation.updatedAt = Date.now();
 		conversation.sequence = ++this.sequence;
 	}
@@ -164,6 +178,37 @@ export class MySqlConversationStore implements ConversationStore {
 			);
 			if (!rows[0]) throw new ConversationAccessError();
 			await connection.execute("DELETE FROM conversation_messages WHERE conversation_id = ?", [conversationId]);
+			for (const message of messages) {
+				await connection.execute(
+					"INSERT INTO conversation_messages (conversation_id, message_json) VALUES (?, ?)",
+					[conversationId, JSON.stringify(message)],
+				);
+			}
+			await connection.execute("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [
+				conversationId,
+			]);
+			await connection.commit();
+		} catch (error) {
+			await connection.rollback();
+			throw error;
+		} finally {
+			connection.release();
+		}
+	}
+
+	async append(conversationId: string, userId: string, messages: AgentMessage[]): Promise<void> {
+		if (messages.length === 0) {
+			await this.requireOwned(conversationId, userId);
+			return;
+		}
+		const connection = await this.pool.getConnection();
+		try {
+			await connection.beginTransaction();
+			const [rows] = await connection.execute<ConversationRow[]>(
+				"SELECT id FROM conversations WHERE id = ? AND user_id = ? FOR UPDATE",
+				[conversationId, userId],
+			);
+			if (!rows[0]) throw new ConversationAccessError();
 			for (const message of messages) {
 				await connection.execute(
 					"INSERT INTO conversation_messages (conversation_id, message_json) VALUES (?, ?)",

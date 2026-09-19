@@ -2,7 +2,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import type { CommerceGateway } from "../../agent/gateways.ts";
 import { REFUND_STATUS_LABELS } from "../../domain/refund-status.ts";
-import { type ToolRequestContext, textResult, toBeijingTime } from "./shared.ts";
+import { type ToolRequestContext, textResult, toBeijingTime, withRecoveryHint } from "./shared.ts";
 
 const listRefundRequestsSchema = Type.Object({
 	orderId: Type.Optional(
@@ -25,10 +25,12 @@ export function createListRefundRequestsTool(
 		parameters: listRefundRequestsSchema,
 		replay: "safe",
 		async execute(_toolCallId, params) {
-			const requests = await commerce.listRefundRequests(context.userId, {
-				orderId: params.orderId,
-				limit: params.limit ?? 5,
-			});
+			const requests = await withRecoveryHint(() =>
+				commerce.listRefundRequests(context.userId, {
+					orderId: params.orderId,
+					limit: params.limit ?? 5,
+				}),
+			);
 			// Only customer-visible fields: the reviewer's identity and internal notes stay server-side.
 			const visible = requests.map((request) => ({
 				refundId: request.id,

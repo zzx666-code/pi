@@ -4,15 +4,17 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"build": "tsgo -p tsconfig.build.json && vite build",
+		"build": "tsgo -p tsconfig.build.json && vite build && vite build --config vite.desk.config.ts",
 		"db:migrate": "tsx --tsconfig tsconfig.node.json src/db/migrate.ts",
 		"knowledge:ingest": "tsx --tsconfig tsconfig.node.json src/knowledge/ingest.ts",
 		"knowledge:verify": "tsx --tsconfig tsconfig.node.json src/knowledge/verify.ts",
 		"dev:agent": "tsx --tsconfig tsconfig.node.json src/agent/server.ts",
 		"dev:commerce": "tsx --tsconfig tsconfig.node.json src/commerce/server.ts",
 		"dev:web": "vite",
+		"dev:desk": "vite --config vite.desk.config.ts",
 		"eval": "tsx --tsconfig tsconfig.node.json src/evals/run.ts",
-		"test": "vitest --run"
+		"test": "vitest --run",
+		"test:integration": "vitest --run test/integration"
 	},
 	"dependencies": {
 		"@earendil-works/pi-agent-core": "^0.85.1",

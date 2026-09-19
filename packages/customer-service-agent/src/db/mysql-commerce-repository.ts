@@ -2,9 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from "mysql2/promise";
 import { CommerceError } from "../domain/order-service.ts";
 import type { RefundStatus } from "../domain/refund-status.ts";
+import type { SupportTicketStatus } from "../domain/support-ticket.ts";
 import type {
 	CommerceStore,
 	CreateDraftRecord,
+	CreateRefundDraftRecord,
 	CreateRefundRequestRecord,
 	DraftItem,
 	DraftStatus,
@@ -12,9 +14,12 @@ import type {
 	OrderDraft,
 	OrderListEntry,
 	Product,
+	RefundDraft,
 	RefundListOptions,
 	RefundRequest,
 	SubmitDraftInput,
+	SupportTicket,
+	SupportTicketListOptions,
 	UpdateRefundStatusRecord,
 } from "../domain/types.ts";
 
@@ -71,6 +76,18 @@ interface RefundRow extends RowDataPacket {
 const REFUND_COLUMNS = `id, order_id, user_id, status, amount_cents, reason, order_created_at, requested_at,
 	last_transition_at, last_transition_by, last_transition_note`;
 
+interface RefundDraftRow extends RowDataPacket {
+	id: string;
+	order_id: string;
+	user_id: string;
+	reason: string | null;
+	amount_cents: number;
+	status: RefundDraft["status"];
+	created_at: Date | string;
+}
+
+const REFUND_DRAFT_COLUMNS = "id, order_id, user_id, reason, amount_cents, status, created_at";
+
 interface OrderListRow extends RowDataPacket {
 	id: string;
 	status: Order["status"];
@@ -84,6 +101,24 @@ interface OrderListItemRow extends RowDataPacket {
 	product_name: string;
 	quantity: number;
 }
+
+interface SupportTicketRow extends RowDataPacket {
+	id: string;
+	user_id: string;
+	conversation_id: string | null;
+	summary: string;
+	status: SupportTicketStatus;
+	assignee: string | null;
+	claimed_at: Date | string | null;
+	closed_at: Date | string | null;
+	close_note: string | null;
+	created_at: Date | string;
+	updated_at: Date | string;
+}
+
+/** Kept as one string so every ticket query returns the same shape. */
+const SUPPORT_TICKET_COLUMNS = `id, user_id, conversation_id, summary, status, assignee, claimed_at, closed_at,
+	close_note, created_at, updated_at`;
 
 function mapItem(row: ItemRow): DraftItem {
 	return {
@@ -111,9 +146,47 @@ function mapRefundRequest(row: RefundRow): RefundRequest {
 	};
 }
 
+function mapRefundDraft(row: RefundDraftRow): RefundDraft {
+	return {
+		id: row.id,
+		orderId: row.order_id,
+		userId: row.user_id,
+		reason: row.reason,
+		amountCents: row.amount_cents,
+		status: row.status,
+		createdAt: new Date(row.created_at).toISOString(),
+	};
+}
+
+function mapSupportTicket(row: SupportTicketRow): SupportTicket {
+	return {
+		id: row.id,
+		userId: row.user_id,
+		conversationId: row.conversation_id,
+		summary: row.summary,
+		status: row.status,
+		assignee: row.assignee,
+		claimedAt: row.claimed_at ? new Date(row.claimed_at).toISOString() : null,
+		closedAt: row.closed_at ? new Date(row.closed_at).toISOString() : null,
+		closeNote: row.close_note,
+		createdAt: new Date(row.created_at).toISOString(),
+		updatedAt: new Date(row.updated_at).toISOString(),
+	};
+}
+
 /** The unique index on the active order is the last line of defence against a concurrent double request. */
 function isDuplicateKeyError(error: unknown): boolean {
 	return typeof error === "object" && error !== null && (error as { code?: string }).code === "ER_DUP_ENTRY";
+}
+
+/**
+ * InnoDB rolls one transaction back to break a lock cycle and expects the caller to try again.
+ *
+ * Order submission acquires two rows per transaction, so two requests sharing an idempotency key
+ * can still meet in a cycle under unusual interleavings even with the draft lock taken first.
+ */
+function isDeadlockError(error: unknown): boolean {
+	return typeof error === "object" && error !== null && (error as { code?: string }).code === "ER_LOCK_DEADLOCK";
 }
 
 export class MySqlCommerceRepository implements CommerceStore {
@@ -235,10 +308,40 @@ export class MySqlCommerceRepository implements CommerceStore {
 		}));
 	}
 
+	/**
+	 * Submits a confirmed draft, tolerating a concurrent request that carries the same key.
+	 *
+	 * Losing that race is not a failure: the order exists, so the retry reads it back. Reporting an
+	 * error would only make the client retry the same call and eventually succeed anyway.
+	 */
 	async submitDraft(input: SubmitDraftInput): Promise<Order> {
+		try {
+			return await this.submitDraftOnce(input);
+		} catch (error) {
+			if (!isDeadlockError(error) && !isDuplicateKeyError(error)) throw error;
+			return await this.submitDraftOnce(input);
+		}
+	}
+
+	private async submitDraftOnce(input: SubmitDraftInput): Promise<Order> {
 		const connection = await this.pool.getConnection();
 		try {
 			await connection.beginTransaction();
+			// The draft lock is taken first on purpose. Every racer needs this row, so the rest of
+			// the transaction runs serialised. Checking the idempotency key first instead would put
+			// a gap lock on a non-existent key in every racer, and the two lock sets crossed into a
+			// reproducible deadlock that surfaced as HTTP 500 for every request but the winner.
+			const [draftRows] = await connection.execute<DraftRow[]>(
+				"SELECT id, user_id, region, total_cents, status FROM order_drafts WHERE id = ? FOR UPDATE",
+				[input.draftId],
+			);
+			const draft = draftRows[0];
+			if (!draft) throw new CommerceError("NOT_FOUND", `Order draft ${input.draftId} was not found`);
+			if (draft.user_id !== input.userId)
+				throw new CommerceError("FORBIDDEN", "Order draft belongs to another user");
+
+			// Deliberately after the draft lock: a winner that already committed must be visible, and
+			// the draft is still `submitted` rather than `confirmed` at that point.
 			const [existingRows] = await connection.execute<OrderRow[]>(
 				"SELECT id, user_id, draft_id, total_cents, status, created_at FROM orders WHERE idempotency_key = ? FOR UPDATE",
 				[input.idempotencyKey],
@@ -252,14 +355,6 @@ export class MySqlCommerceRepository implements CommerceStore {
 				return existing;
 			}
 
-			const [draftRows] = await connection.execute<DraftRow[]>(
-				"SELECT id, user_id, region, total_cents, status FROM order_drafts WHERE id = ? FOR UPDATE",
-				[input.draftId],
-			);
-			const draft = draftRows[0];
-			if (!draft) throw new CommerceError("NOT_FOUND", `Order draft ${input.draftId} was not found`);
-			if (draft.user_id !== input.userId)
-				throw new CommerceError("FORBIDDEN", "Order draft belongs to another user");
 			if (draft.status !== "confirmed") {
 				throw new CommerceError("DRAFT_NOT_CONFIRMED", "Order draft must be confirmed before submission");
 			}
@@ -318,14 +413,132 @@ export class MySqlCommerceRepository implements CommerceStore {
 		}
 	}
 
-	async createSupportTicket(userId: string, summary: string): Promise<{ id: string; status: "open" }> {
+	/**
+	 * Opens a handoff, or returns the one this conversation already has.
+	 *
+	 * A conversation holds at most one ticket that is not closed, enforced by the unique index on
+	 * the generated `active_conversation_id`. A repeat handoff therefore collides with that index
+	 * instead of adding a second entry to the desk queue, and reading the winner back makes a
+	 * sequential repeat and a concurrent one behave the same way.
+	 */
+	async createSupportTicket(userId: string, summary: string, conversationId: string | null): Promise<SupportTicket> {
 		const id = randomUUID();
-		await this.pool.execute("INSERT INTO support_tickets (id, user_id, summary, status) VALUES (?, ?, ?, 'open')", [
-			id,
-			userId,
-			summary,
-		]);
-		return { id, status: "open" };
+		try {
+			await this.pool.execute(
+				"INSERT INTO support_tickets (id, user_id, conversation_id, summary, status) VALUES (?, ?, ?, ?, 'open')",
+				[id, userId, conversationId, summary],
+			);
+		} catch (error) {
+			// A ticket without a conversation is unconstrained, so a collision there is a real
+			// failure and must not be swallowed by turning it into a lookup.
+			if (!conversationId || !isDuplicateKeyError(error)) throw error;
+			const existing = await this.findActiveSupportTicket(conversationId);
+			if (!existing) throw error;
+			return existing;
+		}
+		const created = await this.getSupportTicket(id);
+		if (!created) throw new CommerceError("NOT_FOUND", `Support ticket ${id} was not found after creation`);
+		return created;
+	}
+
+	private async findActiveSupportTicket(conversationId: string): Promise<SupportTicket | undefined> {
+		const [rows] = await this.pool.execute<SupportTicketRow[]>(
+			`SELECT ${SUPPORT_TICKET_COLUMNS} FROM support_tickets WHERE active_conversation_id = ?`,
+			[conversationId],
+		);
+		return rows[0] ? mapSupportTicket(rows[0]) : undefined;
+	}
+
+	async getSupportTicket(id: string): Promise<SupportTicket | undefined> {
+		const [rows] = await this.pool.execute<SupportTicketRow[]>(
+			`SELECT ${SUPPORT_TICKET_COLUMNS} FROM support_tickets WHERE id = ?`,
+			[id],
+		);
+		return rows[0] ? mapSupportTicket(rows[0]) : undefined;
+	}
+
+	async listSupportTickets(options: SupportTicketListOptions = {}): Promise<SupportTicket[]> {
+		const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
+		const conditions: string[] = [];
+		const values: (string | number)[] = [];
+		if (options.status) {
+			conditions.push("status = ?");
+			values.push(options.status);
+		}
+		if (options.conversationId) {
+			conditions.push("conversation_id = ?");
+			values.push(options.conversationId);
+		}
+		const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+		const [rows] = await this.pool.execute<SupportTicketRow[]>(
+			`SELECT ${SUPPORT_TICKET_COLUMNS} FROM support_tickets ${where} ORDER BY created_at DESC LIMIT ?`,
+			[...values, limit],
+		);
+		return rows.map(mapSupportTicket);
+	}
+
+	/**
+	 * Compare-and-set on `open`: a second claim updates zero rows, which is how the desk learns
+	 * that someone else already took the ticket instead of overwriting the first assignee.
+	 */
+	async claimSupportTicket(ticketId: string, assignee: string): Promise<SupportTicket | undefined> {
+		const [result] = await this.pool.execute<ResultSetHeader>(
+			`UPDATE support_tickets
+			 SET status = 'assigned', assignee = ?, claimed_at = CURRENT_TIMESTAMP(3)
+			 WHERE id = ? AND status = 'open'`,
+			[assignee, ticketId],
+		);
+		if (result.affectedRows === 0) return undefined;
+		return await this.getSupportTicket(ticketId);
+	}
+
+	/** Compare-and-set on `assigned`: a ticket nobody worked on cannot be closed. */
+	async closeSupportTicket(ticketId: string, note: string | null): Promise<SupportTicket | undefined> {
+		const [result] = await this.pool.execute<ResultSetHeader>(
+			`UPDATE support_tickets
+			 SET status = 'closed', closed_at = CURRENT_TIMESTAMP(3), close_note = ?
+			 WHERE id = ? AND status = 'assigned'`,
+			[note, ticketId],
+		);
+		if (result.affectedRows === 0) return undefined;
+		return await this.getSupportTicket(ticketId);
+	}
+
+	async createRefundDraft(record: CreateRefundDraftRecord): Promise<RefundDraft> {
+		const id = randomUUID();
+		await this.pool.execute(
+			"INSERT INTO refund_drafts (id, order_id, user_id, reason, amount_cents, status) VALUES (?, ?, ?, ?, ?, 'awaiting_confirmation')",
+			[id, record.orderId, record.userId, record.reason, record.amountCents],
+		);
+		const created = await this.getRefundDraft(id);
+		if (!created) throw new CommerceError("NOT_FOUND", `Refund draft ${id} was not found after creation`);
+		return created;
+	}
+
+	async getRefundDraft(id: string): Promise<RefundDraft | undefined> {
+		const [rows] = await this.pool.execute<RefundDraftRow[]>(
+			`SELECT ${REFUND_DRAFT_COLUMNS} FROM refund_drafts WHERE id = ?`,
+			[id],
+		);
+		return rows[0] ? mapRefundDraft(rows[0]) : undefined;
+	}
+
+	async findAwaitingRefundDraft(orderId: string): Promise<RefundDraft | undefined> {
+		const [rows] = await this.pool.execute<RefundDraftRow[]>(
+			`SELECT ${REFUND_DRAFT_COLUMNS} FROM refund_drafts WHERE order_id = ? AND status = 'awaiting_confirmation' ORDER BY created_at DESC LIMIT 1`,
+			[orderId],
+		);
+		return rows[0] ? mapRefundDraft(rows[0]) : undefined;
+	}
+
+	/** Compare-and-set on `awaiting_confirmation`, so two confirmations cannot both proceed. */
+	async markRefundDraftSubmitted(id: string): Promise<RefundDraft | undefined> {
+		const [result] = await this.pool.execute<ResultSetHeader>(
+			"UPDATE refund_drafts SET status = 'submitted' WHERE id = ? AND status = 'awaiting_confirmation'",
+			[id],
+		);
+		if (result.affectedRows === 0) return undefined;
+		return await this.getRefundDraft(id);
 	}
 
 	/** `active_order_id` is the generated column behind the unique index, so this returns at most one row. */
