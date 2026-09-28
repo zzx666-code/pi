@@ -12,6 +12,8 @@
 		"dev:commerce": "tsx --tsconfig tsconfig.node.json src/commerce/server.ts",
 		"dev:web": "vite",
 		"dev:desk": "vite --config vite.desk.config.ts",
+		"wechat:setup": "tsx --tsconfig tsconfig.node.json src/channels/wechat/setup.ts",
+		"wechat:start": "tsx --tsconfig tsconfig.node.json src/channels/wechat/worker.ts",
 		"eval": "tsx --tsconfig tsconfig.node.json src/evals/run.ts",
 		"test": "vitest --run",
 		"test:integration": "vitest --run test/integration"
@@ -21,6 +23,7 @@
 		"@earendil-works/pi-ai": "^0.85.1",
 		"fastify": "5.12.4",
 		"mysql2": "3.24.4",
+		"qrcode-terminal": "0.12.0",
 		"react": "19.3.0",
 		"react-dom": "19.3.0",
 		"typebox": "1.3.27"

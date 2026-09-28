@@ -1,17 +1,23 @@
-import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import type { CommerceGateway } from "../../agent/gateways.ts";
-import { textResult, withRecoveryHint } from "./shared.ts";
+import { type CustomerServiceTool, textResult, withRecoveryHint } from "./shared.ts";
 
 const searchProductsSchema = Type.Object({ query: Type.String({ minLength: 1 }) });
 
+export const searchProductsToolSystemPromptContribution = {
+	snippet: "根据用户描述搜索可购买的商品，返回价格单位为分",
+	guidelines: ["商品名称、价格和规格必须调用 search_products 查询，不得猜测；search_products 返回的价格单位是分。"],
+} as const;
+
 export function createSearchProductsTool(
 	commerce: CommerceGateway,
-): AgentTool<typeof searchProductsSchema, { count: number }> {
+): CustomerServiceTool<typeof searchProductsSchema, { count: number }> {
 	return {
 		name: "search_products",
 		label: "搜索商品",
 		description: "根据用户描述搜索可购买的商品。返回价格单位为分。",
+		promptSnippet: searchProductsToolSystemPromptContribution.snippet,
+		promptGuidelines: [...searchProductsToolSystemPromptContribution.guidelines],
 		parameters: searchProductsSchema,
 		replay: "safe",
 		async execute(_toolCallId, params) {

@@ -1,3 +1,6 @@
+import { CustomerServiceWechatAgent } from "../channels/wechat/agent-adapter.ts";
+import { MySqlWechatChannelStore } from "../channels/wechat/mysql-store.ts";
+import { WechatChannelService } from "../channels/wechat/service.ts";
 import { loadConfig } from "../config.ts";
 import { createMysqlPool } from "../db/mysql.ts";
 import { MySqlKnowledgeGateway } from "../knowledge/mysql-knowledge.ts";
@@ -13,6 +16,7 @@ const pool = createMysqlPool(config.mysqlUrl);
 const commerce = new CommerceHttpGateway(config.commerceBaseUrl, config.commerceInternalToken);
 const knowledge = new MySqlKnowledgeGateway(pool);
 const runtime = await createCustomerModelRuntime(config);
+const wechatStore = new MySqlWechatChannelStore(pool);
 const service = new CustomerServiceAgentService({
 	model: runtime.model,
 	streamFn: runtime.models.streamSimple.bind(runtime.models),
@@ -20,6 +24,15 @@ const service = new CustomerServiceAgentService({
 	knowledge,
 	conversations: new MySqlConversationStore(pool),
 	deskAudit: new MySqlDeskAuditStore(pool),
+	replySink: wechatStore,
+	enabledTools: ["search_products", "get_inventory", "list_orders", "create_refund_draft"],
+});
+const wechat = new WechatChannelService({
+	store: wechatStore,
+	agent: new CustomerServiceWechatAgent(service),
+	actions: commerce,
+	demoUserId: config.demoUserId,
+	autoBindDemoUser: config.wechatDemoAutoBind,
 });
 const app = createAgentApp(service, commerce, {
 	authSecret: config.authSecret,
@@ -27,6 +40,8 @@ const app = createAgentApp(service, commerce, {
 	deskToken: config.deskToken,
 	allowedOrigin: process.env.WEB_ORIGIN,
 	refunds: commerce,
+	wechat,
+	channelToken: config.channelToken,
 });
 
 app.addHook("onClose", async () => {

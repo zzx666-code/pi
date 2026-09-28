@@ -13,6 +13,7 @@ import {
 	loginDemo,
 	streamChat,
 } from "./api.ts";
+import { LandingPage } from "./LandingPage.tsx";
 import { toPlainText } from "./text.ts";
 
 interface ChatMessage {
@@ -101,6 +102,8 @@ function titleFromInput(input: string): string {
 
 export function App() {
 	const [token, setToken] = useState("");
+	const [entryState, setEntryState] = useState<"idle" | "loading">("idle");
+	const [entryError, setEntryError] = useState("");
 	const [conversations, setConversations] = useState<ConversationSummary[]>([]);
 	const [conversationId, setConversationId] = useState("");
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -116,43 +119,38 @@ export function App() {
 	/** Read by the poller, which must not be torn down and rebuilt every time a turn starts. */
 	const busyRef = useRef(false);
 
-	useEffect(() => {
-		let cancelled = false;
-		void (async () => {
-			try {
-				const auth = await loginDemo();
-				const existing = await listConversations(auth.token);
-				if (cancelled) return;
-				setToken(auth.token);
-				if (existing.length > 0) {
-					const latest = existing[0];
-					const history = await loadConversationMessages(auth.token, latest.id);
-					if (cancelled) return;
-					setConversations(existing);
-					setConversationId(latest.id);
-					setUnderHumanTakeover(history.underHumanTakeover);
-					setMessages(history.messages.length > 0 ? toChatMessages(history.messages) : [welcomeMessage()]);
-					await restoreDraft(auth.token, latest.id, history.orderDraftId);
-					await restoreRefundDraft(auth.token, latest.id, history.refundDraftId);
-				} else {
-					const id = await createConversation(auth.token);
-					if (cancelled) return;
-					setConversations([{ id, title: "新会话", messageCount: 0, updatedAt: new Date().toISOString() }]);
-					setConversationId(id);
-					setMessages([welcomeMessage()]);
-				}
-				setConnectionState(`已连接 · ${auth.userId}`);
-			} catch (error) {
-				if (cancelled) return;
-				setConnectionState(error instanceof Error ? error.message : "连接失败");
-			} finally {
-				if (!cancelled) setLoadingHistory(false);
+	async function enterDemo(): Promise<void> {
+		if (entryState === "loading") return;
+		setEntryState("loading");
+		setEntryError("");
+		setLoadingHistory(true);
+		try {
+			const auth = await loginDemo();
+			const existing = await listConversations(auth.token);
+			if (existing.length > 0) {
+				const latest = existing[0];
+				const history = await loadConversationMessages(auth.token, latest.id);
+				setConversations(existing);
+				setConversationId(latest.id);
+				setUnderHumanTakeover(history.underHumanTakeover);
+				setMessages(history.messages.length > 0 ? toChatMessages(history.messages) : [welcomeMessage()]);
+				await restoreDraft(auth.token, latest.id, history.orderDraftId);
+				await restoreRefundDraft(auth.token, latest.id, history.refundDraftId);
+			} else {
+				const id = await createConversation(auth.token);
+				setConversations([{ id, title: "新会话", messageCount: 0, updatedAt: new Date().toISOString() }]);
+				setConversationId(id);
+				setMessages([welcomeMessage()]);
 			}
-		})();
-		return () => {
-			cancelled = true;
-		};
-	}, []);
+			setConnectionState(`已连接 · ${auth.userId}`);
+			setToken(auth.token);
+		} catch (error) {
+			setEntryError(error instanceof Error ? error.message : "连接失败，请重试");
+		} finally {
+			setLoadingHistory(false);
+			setEntryState("idle");
+		}
+	}
 
 	useEffect(() => {
 		busyRef.current = busy;
@@ -391,6 +389,10 @@ export function App() {
 		if (message.role === "user") return "你";
 		if (message.role === "agent") return message.author ? `人工客服 ${message.author}` : "人工客服";
 		return "客服 Agent";
+	}
+
+	if (!token) {
+		return <LandingPage loading={entryState === "loading"} error={entryError} onEnter={() => void enterDemo()} />;
 	}
 
 	return (

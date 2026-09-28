@@ -1,6 +1,7 @@
 import type { IncomingHttpHeaders } from "node:http";
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
+import type { WechatChannelService } from "../channels/wechat/service.ts";
 import { isSupportTicketStatus } from "../domain/support-ticket.ts";
 import { AuthError, signAuthToken, verifyAuthToken } from "./auth.ts";
 import { ConversationAccessError } from "./conversation-store.ts";
@@ -18,6 +19,9 @@ interface AgentAppOptions {
 	 * confirmation route would be missing and refunds could only be opened by the model.
 	 */
 	refunds: RefundConfirmationGateway;
+	/** Optional trusted channel adapter. It is never exposed to browser JWTs. */
+	wechat?: WechatChannelService;
+	channelToken?: string;
 }
 
 function authenticate(headers: IncomingHttpHeaders, secret: string): string {
@@ -32,6 +36,10 @@ function authenticate(headers: IncomingHttpHeaders, secret: string): string {
  */
 function requireDeskToken(headers: IncomingHttpHeaders, token: string): void {
 	if (headers["x-internal-token"] !== token) throw new AuthError("A valid internal service token is required");
+}
+
+function requireChannelToken(headers: IncomingHttpHeaders, token: string): void {
+	if (headers["x-channel-token"] !== token) throw new AuthError("A valid channel service token is required");
 }
 
 function writeSse(reply: FastifyReply, event: string, data: unknown): void {
@@ -71,7 +79,10 @@ export function createAgentApp(
 	app.addHook("onRequest", async (request, reply) => {
 		const origin = options.allowedOrigin ?? "http://127.0.0.1:5173";
 		reply.header("access-control-allow-origin", origin);
-		reply.header("access-control-allow-headers", "authorization, content-type, idempotency-key, x-internal-token");
+		reply.header(
+			"access-control-allow-headers",
+			"authorization, content-type, idempotency-key, x-internal-token, x-channel-token",
+		);
 		reply.header("access-control-allow-methods", "GET, POST, OPTIONS");
 		if (request.method === "OPTIONS") await reply.code(204).send();
 	});
@@ -98,6 +109,50 @@ export function createAgentApp(
 	});
 
 	app.get("/health", async () => ({ status: "ok" }));
+
+	if (options.wechat && options.channelToken) {
+		const wechat = options.wechat;
+		const channelToken = options.channelToken;
+		app.post<{
+			Body: {
+				externalUserId?: unknown;
+				externalMessageId?: unknown;
+				contextToken?: unknown;
+				text?: unknown;
+			};
+		}>("/api/internal/channels/wechat/messages", async (request, reply) => {
+			requireChannelToken(request.headers, channelToken);
+			const { externalUserId, externalMessageId, contextToken, text } = request.body ?? {};
+			if (
+				typeof externalUserId !== "string" ||
+				!externalUserId.trim() ||
+				typeof externalMessageId !== "string" ||
+				!externalMessageId.trim() ||
+				typeof contextToken !== "string" ||
+				!contextToken.trim() ||
+				typeof text !== "string" ||
+				!text.trim()
+			) {
+				return await reply
+					.code(400)
+					.send({ code: "INVALID_INPUT", message: "Complete WeChat message fields are required" });
+			}
+			if (
+				externalUserId.length > 255 ||
+				externalMessageId.length > 255 ||
+				contextToken.length > 8192 ||
+				text.length > 4000
+			) {
+				return await reply.code(400).send({ code: "INVALID_INPUT", message: "WeChat message fields are too long" });
+			}
+			return await wechat.handleInbound({
+				externalUserId: externalUserId.trim(),
+				externalMessageId: externalMessageId.trim(),
+				contextToken: contextToken.trim(),
+				text: text.trim(),
+			});
+		});
+	}
 
 	app.post<{ Body: { userId?: unknown } }>("/api/auth/demo", async (request) => {
 		const userId = request.body?.userId ?? options.demoUserId;

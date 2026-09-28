@@ -16,8 +16,8 @@ import {
 const TOKEN_STORAGE_KEY = "pi-desk-token";
 const ASSIGNEE_STORAGE_KEY = "pi-desk-assignee";
 
-/** Matches the customer page: short enough to feel live, long enough not to hammer the API. */
-const POLL_INTERVAL_MS = 5000;
+/** Keeps the active desk transcript responsive until it is replaced with a push channel. */
+const POLL_INTERVAL_MS = 1000;
 
 const STATUS_TABS: readonly { status: DeskTicketStatus; label: string; hint: string }[] = [
 	{ status: "open", label: "待认领", hint: "客户已转人工。认领后会话进入人工接管，机器人停止回答。" },

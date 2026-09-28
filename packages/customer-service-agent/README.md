@@ -40,6 +40,7 @@ flowchart LR
 - 坐席操作审计：认领、回复、关闭都留痕，被拒绝的尝试也记录原因码
 - JWT 身份绑定、会话隔离、工具审计日志
 - SSE 流式对话界面和可执行评测场景
+- 微信文字通道：微信消息复用同一套 Pi Agent、业务工具和人工坐席；订单与退款仍需一次性确认码
 
 ## 本地启动
 
@@ -65,6 +66,24 @@ cd packages/customer-service-agent
 | Commerce API | `http://127.0.0.1:3101` | 商品、库存、订单、退款 |
 
 MySQL 在 `3307`（容器内仍为 `3306`）。两个 Vite 前端都会把 `/api` 代理到 Agent API。
+
+## 微信接入
+
+微信桥接进程只负责收发消息，真实业务仍由 Agent API 和 Commerce API 执行。微信用户、Pi 会话、消息去重、确认码、同步游标和待发送回复都保存在 MySQL；桥接进程不能直接访问订单工具，也不会暴露终端或文件系统能力。
+
+先确保 MySQL、Commerce API 和 Agent API 已启动并完成迁移，然后在包目录执行：
+
+```powershell
+npm run db:migrate
+npm run wechat:setup  # 微信扫码，只需首次执行
+npm run wechat:start  # 持续接收微信消息并发送回复
+```
+
+扫码凭据默认保存在 `.wechat/credentials.json`，该目录已被 Git 忽略。默认只允许扫码账号本人使用；也可以设置逗号分隔的 `WECHAT_ALLOWED_USER_IDS` 白名单。生产环境必须设置相同的强随机 `CHANNEL_INTERNAL_TOKEN` 给 Agent API 和微信桥接进程，并把 `WECHAT_DEMO_AUTO_BIND=false`，接入真实账号绑定流程。
+
+微信中支持 `/help`、`/new`、`/status`。创建订单或退款草稿后，系统会返回 5 分钟有效的一次性确认码，必须回复形如 `确认下单 A1B2C3` 或 `确认退款 A1B2C3` 才会执行真实写操作。人工坐席回复也会进入同一个微信会话。
+
+当前是私聊文字消息 MVP，不支持群聊、图片、语音和文件。微信协议属于外部依赖，正式部署前应重新验证协议兼容性和平台使用规则。
 
 手动启动：
 

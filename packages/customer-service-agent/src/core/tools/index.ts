@@ -9,9 +9,9 @@ import { createListOrdersTool } from "./list-orders.ts";
 import { createListRefundRequestsTool } from "./list-refund-requests.ts";
 import { createSearchKnowledgeBaseTool } from "./search-knowledge-base.ts";
 import { createSearchProductsTool } from "./search-products.ts";
-import type { ToolRequestContext } from "./shared.ts";
+import type { CustomerServiceTool, ToolRequestContext } from "./shared.ts";
 
-export type { ToolRequestContext };
+export type { CustomerServiceTool, ToolRequestContext };
 
 /**
  * Builds the tool set for one conversation turn.
@@ -36,4 +36,47 @@ export function createCustomerServiceTools(
 		list_refund_requests: createListRefundRequestsTool(context, commerce),
 		handoff_to_human: createHandoffToHumanTool(context, commerce),
 	};
+}
+
+/** Every tool for one turn, keyed by its runtime name. */
+export type CustomerServiceToolSet = ReturnType<typeof createCustomerServiceTools>;
+
+/** A tool name that actually exists in the set. */
+export type CustomerServiceToolName = keyof CustomerServiceToolSet;
+
+/** The union of all tool types, so a subset keeps a nameable type instead of widening to `any`. */
+export type CustomerServiceToolOfSet = CustomerServiceToolSet[CustomerServiceToolName];
+
+/** Every tool name, in the order createCustomerServiceTools() defines them. */
+export function allCustomerServiceToolNames(tools: CustomerServiceToolSet): CustomerServiceToolName[] {
+	return Object.keys(tools) as CustomerServiceToolName[];
+}
+
+/**
+ * The active subset, in the order the names are given.
+ *
+ * Mirrors coding-agent's `setActiveToolsByName`: unknown names are ignored rather than
+ * rejected. A tool that is not selected is invisible to the model *and* contributes no
+ * rules to the prompt, so the two can never disagree.
+ */
+export function selectCustomerServiceTools(
+	tools: CustomerServiceToolSet,
+	names: readonly CustomerServiceToolName[],
+): CustomerServiceToolOfSet[] {
+	const selected: CustomerServiceToolOfSet[] = [];
+	for (const name of names) {
+		const tool = tools[name];
+		if (tool) {
+			selected.push(tool);
+		}
+	}
+	return selected;
+}
+
+/** Type guard used by callers that need to read a subset out of configuration. */
+export function isCustomerServiceToolName(
+	tools: CustomerServiceToolSet,
+	name: string,
+): name is CustomerServiceToolName {
+	return Object.hasOwn(tools, name);
 }

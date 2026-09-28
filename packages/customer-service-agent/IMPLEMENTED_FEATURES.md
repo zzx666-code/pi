@@ -149,6 +149,15 @@
 
 ## 数据与基础设施
 
+### 微信通道
+
+- 微信私聊文字消息通过独立桥接进程转发到受内部令牌保护的 Agent API，复用现有 Pi Agent、库存、订单、退款、知识库和转人工工具。
+- `channel_identities` 保存微信身份到业务用户的映射，`channel_conversations` 保存微信用户当前对应的 Pi 会话；微信 `context_token` 只用于回信，不作为业务身份。
+- 入站消息按微信消息 ID 去重；处理失败会释放处理中记录以允许重试。出站消息使用 MySQL outbox，发送失败按退避策略重试。
+- 订单与退款保持两段式确认。微信侧生成 5 分钟有效的一次性确认码，过期后重新生成；没有确认码不能执行正式下单或退款提交。
+- 微信同步游标保存在 MySQL，桥接进程重启后从上次位置继续。人工坐席回复写入 outbox 后也会发送到微信。
+- 当前边界是私聊文字消息 MVP；群聊、媒体消息、真实账号绑定管理界面尚未实现。
+
 ### MySQL
 
 Docker Compose 只运行 MySQL，主机端口为 `3307`，容器内端口为 `3306`。主要表包括：
@@ -165,6 +174,9 @@ Docker Compose 只运行 MySQL，主机端口为 `3307`，容器内端口为 `33
 - `desk_audit_logs`：坐席操作审计日志，记录谁在什么时候对哪张工单做了什么、结果如何
 - `knowledge_documents`：售后知识库分片
 - `schema_migrations`：已应用的迁移文件名
+- `channel_identities`、`channel_conversations`：外部渠道身份与 Pi 会话映射
+- `channel_inbound_messages`、`channel_outbox`：微信消息去重与可靠投递
+- `channel_pending_actions`、`wechat_sync_state`：微信确认动作与同步游标
 
 初始化 SQL 显式使用 `utf8mb4`，防止中文地区和商品数据出现乱码。
 

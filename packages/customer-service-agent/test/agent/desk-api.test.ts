@@ -25,6 +25,11 @@ import { InMemoryDeskAuditStore } from "../../src/agent/desk-audit.ts";
 import { type CommerceGateway, CommerceHttpError } from "../../src/agent/gateways.ts";
 import { createHumanAgentMessage } from "../../src/agent/human-agent-message.ts";
 import { CustomerServiceAgentService } from "../../src/agent/service.ts";
+import {
+	InMemoryWechatChannelStore,
+	type WechatActionGateway,
+	WechatChannelService,
+} from "../../src/channels/wechat/service.ts";
 import { InMemoryCommerceRepository } from "../../src/db/in-memory-commerce-repository.ts";
 
 const DESK_TOKEN = "desk-token";
@@ -122,10 +127,11 @@ class FakeCommerceGateway implements CommerceGateway {
 	}
 }
 
-function createHarness() {
+function createHarness(options: { withWechat?: boolean } = {}) {
 	const commerce = new FakeCommerceGateway();
 	const conversations = new InMemoryConversationStore();
 	const deskAudit = new InMemoryDeskAuditStore();
+	const channelStore = new InMemoryWechatChannelStore();
 	const service = new CustomerServiceAgentService({
 		model: TEST_MODEL,
 		streamFn: async () => {
@@ -135,7 +141,40 @@ function createHarness() {
 		knowledge: { search: async () => [] },
 		conversations,
 		deskAudit,
+		replySink: channelStore,
 	});
+	const wechatActions: WechatActionGateway = {
+		getOrderDraft: async () => {
+			throw new Error("the channel API test never loads order drafts");
+		},
+		confirmOrderDraft: async () => {
+			throw new Error("the channel API test never confirms orders");
+		},
+		submitOrderDraft: async () => {
+			throw new Error("the channel API test never submits orders");
+		},
+		loadRefundDraft: async () => {
+			throw new Error("the channel API test never loads refund drafts");
+		},
+		confirmRefundDraft: async () => {
+			throw new Error("the channel API test never confirms refunds");
+		},
+	};
+	const wechat = options.withWechat
+		? new WechatChannelService({
+				store: channelStore,
+				agent: {
+					createConversation: async () => "conversation-wechat",
+					runTurn: async (_userId, _conversationId, text) => ({
+						reply: `微信回复：${text}`,
+						takenOverByHuman: false,
+					}),
+				},
+				actions: wechatActions,
+				demoUserId: "user-1",
+				autoBindDemoUser: true,
+			})
+		: undefined;
 	const app = createAgentApp(service, commerce, {
 		authSecret: "test-secret",
 		demoUserId: "user-1",
@@ -148,8 +187,10 @@ function createHarness() {
 				throw new Error("the desk test never loads refund drafts");
 			},
 		},
+		wechat,
+		channelToken: "channel-token",
 	});
-	return { app, commerce, conversations, deskAudit, service };
+	return { app, commerce, conversations, deskAudit, service, channelStore };
 }
 
 async function seedTicket(commerce: FakeCommerceGateway, conversationId: string, summary = "我要投诉") {
@@ -157,6 +198,55 @@ async function seedTicket(commerce: FakeCommerceGateway, conversationId: string,
 }
 
 describe("desk API", () => {
+	it("protects the WeChat channel endpoint with its own service token", async () => {
+		const { app } = createHarness({ withWechat: true });
+		const payload = {
+			externalUserId: "wx-user-1",
+			externalMessageId: "message-1",
+			contextToken: "context-1",
+			text: "查库存",
+		};
+
+		const denied = await app.inject({ method: "POST", url: "/api/internal/channels/wechat/messages", payload });
+		const accepted = await app.inject({
+			method: "POST",
+			url: "/api/internal/channels/wechat/messages",
+			headers: { "x-channel-token": "channel-token" },
+			payload,
+		});
+
+		expect(denied.statusCode).toBe(401);
+		expect(accepted.statusCode).toBe(200);
+		expect(accepted.json()).toMatchObject({ conversationId: "conversation-wechat", reply: "微信回复：查库存" });
+		await app.close();
+	});
+
+	it("queues a claimed desk reply for the linked WeChat conversation", async () => {
+		const { app, commerce, conversations, channelStore } = createHarness();
+		const conversationId = await conversations.create("user-1");
+		await channelStore.bindUser("wx-user-1", "user-1");
+		await channelStore.saveConversation("wx-user-1", conversationId, "context-latest");
+		const ticket = await seedTicket(commerce, conversationId);
+		await commerce.claimSupportTicket(ticket.id, "客服小李");
+
+		const response = await app.inject({
+			method: "POST",
+			url: `/api/support-tickets/${ticket.id}/reply`,
+			headers: deskHeaders,
+			payload: { text: "库存问题已经处理完成" },
+		});
+
+		expect(response.statusCode).toBe(200);
+		expect(await channelStore.claimOutbox(10)).toEqual([
+			expect.objectContaining({
+				externalUserId: "wx-user-1",
+				contextToken: "context-latest",
+				content: "人工客服 客服小李：库存问题已经处理完成",
+			}),
+		]);
+		await app.close();
+	});
+
 	it("rejects a desk call without the internal token", async () => {
 		const { app } = createHarness();
 

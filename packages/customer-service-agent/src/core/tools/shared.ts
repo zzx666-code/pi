@@ -1,10 +1,31 @@
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { TSchema } from "typebox";
 import { CommerceHttpError } from "../../agent/gateways.ts";
 
 /** Trusted identity injected by the Agent API. The model cannot set or override these values. */
 export interface ToolRequestContext {
 	userId: string;
 	conversationId: string;
+}
+
+/**
+ * A tool that carries its own system-prompt contribution.
+ *
+ * Same shape as coding-agent's `ToolDefinition`: the prompt text lives next to the schema
+ * that defines the tool, so a tool that is not active also contributes no rules to the
+ * prompt. Nothing in the runtime reads these fields; the prompt builder does.
+ */
+export interface CustomerServiceTool<TParameters extends TSchema = TSchema, TDetails = unknown>
+	extends AgentTool<TParameters, TDetails> {
+	/** One line for the "可用工具" section. Tools without a snippet are not listed. */
+	promptSnippet?: string;
+	/**
+	 * Bullets appended to the "守则" section while this tool is active.
+	 *
+	 * The bullets are appended flat, with no tool-name prefix, so each bullet must name the
+	 * tool it refers to — "不要用同一个编号重试" is ambiguous, "不要拿 draftId 当订单号查询" is not.
+	 */
+	promptGuidelines?: readonly string[];
 }
 
 export function textResult<T>(text: string, details: T): AgentToolResult<T> {

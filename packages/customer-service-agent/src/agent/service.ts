@@ -1,6 +1,13 @@
-import { Agent, type AgentEvent, type StreamFn } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentEvent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
-import { createCustomerServiceTools } from "../core/tools/index.ts";
+import {
+	allCustomerServiceToolNames,
+	type CustomerServiceToolName,
+	type CustomerServiceToolOfSet,
+	type CustomerServiceToolSet,
+	createCustomerServiceTools,
+	selectCustomerServiceTools,
+} from "../core/tools/index.ts";
 import type { SupportTicket, SupportTicketListOptions } from "../domain/types.ts";
 import type { ConversationStore, ConversationSummary } from "./conversation-store.ts";
 import {
@@ -13,7 +20,7 @@ import {
 import type { DeskAction, DeskAuditStore } from "./desk-audit.ts";
 import { type CommerceGateway, CommerceHttpError, type DraftSummary, type KnowledgeGateway } from "./gateways.ts";
 import { createHumanAgentMessage, toLlmMessages } from "./human-agent-message.ts";
-import { CUSTOMER_SERVICE_SYSTEM_PROMPT } from "./system-prompt.ts";
+import { buildCustomerServiceSystemPrompt } from "./system-prompt.ts";
 
 export type AgentEventListener = (event: AgentEvent) => Promise<void> | void;
 
@@ -44,9 +51,18 @@ export interface CustomerServiceAgentOptions {
 	streamFn: StreamFn;
 	commerce: CommerceGateway;
 	knowledge: KnowledgeGateway;
+	/**
+	 * Tools the model may see, in prompt order. Omitted means every tool.
+	 *
+	 * A tool left out here is absent from the provider request and from the prompt, so its
+	 * rules never appear either.
+	 */
+	enabledTools?: readonly CustomerServiceToolName[];
 	conversations: ConversationStore;
 	/** Where desk actions are recorded. Required: an unauditable desk is not a supported mode. */
 	deskAudit: DeskAuditStore;
+	/** Optional customer-channel delivery sink for asynchronous human replies. */
+	replySink?: { enqueueConversationReply(conversationId: string, content: string): Promise<void> };
 }
 
 export class CustomerServiceAgentService {
@@ -139,6 +155,7 @@ export class CustomerServiceAgentService {
 				await this.options.conversations.append(conversationId, ticket.userId, [
 					createHumanAgentMessage({ author: assignee, text, ticketId, timestamp: Date.now() }),
 				]);
+				await this.options.replySink?.enqueueConversationReply(conversationId, `人工客服 ${assignee}：${text}`);
 				return ticket;
 			},
 		);
@@ -193,6 +210,16 @@ export class CustomerServiceAgentService {
 		}
 	}
 
+	/**
+	 * The tools the model may see this turn.
+	 *
+	 * The tool list and the system prompt both come from this one call, so a tool that is
+	 * not enabled cannot leave rules behind in the prompt.
+	 */
+	private selectTools(toolSet: CustomerServiceToolSet): CustomerServiceToolOfSet[] {
+		return selectCustomerServiceTools(toolSet, this.options.enabledTools ?? allCustomerServiceToolNames(toolSet));
+	}
+
 	async runMessage(
 		userId: string,
 		conversationId: string,
@@ -218,13 +245,17 @@ export class CustomerServiceAgentService {
 				this.options.commerce,
 				this.options.knowledge,
 			);
+			const tools = this.selectTools(toolSet);
 			const startedAt = new Map<string, number>();
 			const agent = new Agent({
 				initialState: {
-					systemPrompt: CUSTOMER_SERVICE_SYSTEM_PROMPT,
+					systemPrompt: buildCustomerServiceSystemPrompt({ tools }),
 					model: this.options.model,
 					messages,
-					tools: Object.values(toolSet),
+					// AgentTool<any> types execute() parameters as unknown, so a concretely typed
+					// tool is not structurally assignable. The runtime only needs the declared
+					// surface, so widen once here instead of widening every tool factory.
+					tools: tools as AgentTool<any>[],
 				},
 				streamFn: this.options.streamFn,
 				sessionId: conversationId,
