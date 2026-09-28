@@ -223,7 +223,6 @@ export default function promptUrlWidgetExtension(pi: ExtensionAPI) {
 		if (!match) {
 			return;
 		}
-
 		updatePromptContext(ctx, match);
 	});
 
